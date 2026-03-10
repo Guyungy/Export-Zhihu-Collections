@@ -124,10 +124,48 @@ python3 main.py "收藏夹URL" --output "./exports/zhihu"
 
 项目会读取根目录下的 `cookies.json`。格式来自浏览器导出的 cookies 列表，脚本会自动转换成请求所需的字典结构。
 
+可以直接参考项目里的模板文件：
+
+```text
+cookies.example.json
+```
+
+复制一份并改名为：
+
+```text
+cookies.json
+```
+
+然后把里面的示例值替换成你自己浏览器里导出的真实知乎 cookies。
+
+注意：
+- `cookie_name_1`、`cookie_value_1` 这类只是占位符，不能直接使用
+- 如果 `cookies.json` 里仍然是示例值，访问私密收藏夹时通常会返回 `401 Authorization Required`
+- 项目现在会自动跳过非法或非 Latin-1 的 cookie 项，但这不等于可以使用伪造占位数据
+
 如果没有 `cookies.json`：
 - 程序仍可运行
 - 但私密内容通常无法访问
 - 某些公开内容也可能因为权限或风控而获取不完整
+
+一个最小可用模板如下：
+
+```json
+[
+  {
+    "name": "z_c0",
+    "value": "your_real_cookie_value"
+  },
+  {
+    "name": "d_c0",
+    "value": "your_real_cookie_value"
+  },
+  {
+    "name": "_zap",
+    "value": "your_real_cookie_value"
+  }
+]
+```
 
 ## 导出结果说明
 

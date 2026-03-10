@@ -95,6 +95,12 @@ def load_cookies() -> dict:
         name = cookie.get("name")
         value = cookie.get("value")
         if name and value is not None:
+            try:
+                str(name).encode("latin-1")
+                str(value).encode("latin-1")
+            except UnicodeEncodeError:
+                print(f"跳过非法 cookie 项: {name}")
+                continue
             cookies_dict[name] = value
     return cookies_dict
 
