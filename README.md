@@ -1,244 +1,167 @@
-# Export Zhihu Collections
+# CLAUDE.md
 
-将知乎收藏夹导出为本地 Markdown 文件，适合归档、二次整理、导入 Obsidian，或离线查阅。
+此文件为 Claude Code (claude.ai/code) 在此仓库中工作时提供指导。
 
-当前版本支持：
-- 公开收藏夹导出
-- 带 `cookies.json` 的私密收藏夹导出
-- 交互式启动
-- 多线程并发导出
-- 自动跳过已存在文件
-- 图片资源下载
-- 请求超时与重试控制
+## 重要规则
+- **始终使用中文回答**
+- 在处理此项目时，所有交流都应使用中文
 
-## 适用场景
+## 项目概述
 
-如果你有这些需求，这个项目基本适合：
-- 把知乎收藏长期备份到本地
-- 导出成 Markdown 后再导入笔记系统
-- 批量整理回答和专栏文章
-- 定期增量导出，避免重复下载
+Export-Zhihu-Collections 是一个将知乎收藏夹导出为 Markdown 格式的 Python 工具。该工具支持公开和私密收藏夹，可批量处理多个收藏夹，支持自定义输出路径，可下载内嵌图片，并将 HTML 内容转换为 Obsidian 兼容的 Markdown 格式。
 
-## 安装
+## 核心组件
 
-确保本机已有 Python 3，然后安装依赖：
+### 主要架构
+- **main.py**: 包含收藏夹导出逻辑的主脚本
+  - `load_config()`: 加载和解析配置文件
+  - `parse_output_path()`: 跨平台路径解析和处理
+  - `get_article_urls_in_collection()`: 使用知乎 API 获取收藏夹中的所有 URL
+  - `get_single_answer_content()`: 从问答页面提取回答内容（增强版，支持多种页面结构）
+  - `get_single_post_content()`: 从专栏文章提取内容（增强版，支持多种页面结构）
+  - `process_single_collection()`: 处理单个收藏夹的完整流程
+  - `flush_logs()`: 实时日志刷新功能
+  - `setup_debug_logging()`: 调试日志配置
+  - `get_debug_path()`: 获取调试文件保存路径
+  - `ObsidianStyleConverter`: 用于 Obsidian 风格输出的自定义 MarkdownConverter
+- **fetch_collections.py**: 独立的收藏夹获取脚本
+  - `get_collections_from_page()`: 从知乎页面解析收藏夹信息
+  - `update_config_with_collections()`: 自动更新配置文件
+- **utils.py**: 包含用于文件名清理的 `filter_title_str()` 函数
+- **config.json**: 主配置文件，包含收藏夹列表、输出路径和系统设置
+- **config_examples.json**: 各种操作系统的配置示例
+- **zhihuUrls.json**: 旧版收藏夹URL列表文件（向后兼容）
+- **cookies.json**: 访问私密收藏夹的认证 cookies
+- **test/**: 测试文件目录，包含各种功能测试脚本
 
-```bash
-python3 -m pip install -r requirements.txt
-```
-
-## 快速开始
-
-直接传入收藏夹链接：
-
-```bash
-python3 main.py "https://www.zhihu.com/collection/123456789"
-```
-
-导出完成后，默认文件会写入：
-
-```text
-downloads/剪藏
-```
-
-图片资源默认写入：
-
-```text
-downloads/剪藏/assets
-```
-
-## 交互模式
-
-如果你不想一次把参数都写在命令里，可以直接进入交互模式：
-
-```bash
-python3 main.py --interactive
-```
-
-程序会逐项询问：
-- 收藏夹 URL
-- 并发线程数
-- 重试次数
-- 请求超时
-- 最小/最大随机等待时间
-- 导出数量限制
-- 输出目录
-- 是否跳过已存在文件
-- 是否下载图片
-- 是否只列出内容而不导出
-
-这套模式更适合第一次使用，或者你想临时调整导出策略的时候。
+### 数据流程
+1. 加载配置文件 (config.json 或 zhihuUrls.json)
+2. 解析和验证输出路径，支持多种操作系统格式
+3. 批量处理多个收藏夹：
+   - 解析收藏夹 URL 提取收藏夹 ID
+   - 使用知乎 API 获取收藏夹中的所有项目（分页处理，使用 offset/limit）
+   - 对每个项目，判断类型（回答或文章）并获取内容
+   - 检查文件是否已存在，避免重复下载
+   - 使用自定义转换器将 HTML 转换为 Markdown
+   - 下载并保存图片到 assets 文件夹
+   - 使用清理后的文件名保存 Markdown 文件
+4. 生成详细的处理日志并保存到 logs 目录
 
 ## 常用命令
 
-只导出前 50 篇：
-
+### 安装和设置
 ```bash
-python3 main.py "收藏夹URL" --limit 50
+# 安装依赖
+pip install -r requirements.txt
 ```
 
-提高一点并发速度：
-
+### 配置和运行
 ```bash
-python3 main.py "收藏夹URL" --workers 6
+# 1. 创建配置文件
+cp config_examples.json config.json
+# 编辑 config.json，添加你的收藏夹信息
+
+# 2. 运行导出工具（批量处理）
+python main.py
+
+# 3. 启动图形界面（推荐）
+python gui.py
+
+# 对于私密收藏夹，确保根目录下存在 cookies.json 文件
 ```
 
-只看列表，不下载：
+### GUI 功能
+- 可视化编辑 `config.json` 中的收藏夹名称和 URL
+- 选择输出目录和系统类型
+- 一键保存配置
+- 一键拉取“我的收藏夹”列表
+- 一键启动导出，并在窗口内实时查看日志
 
-```bash
-python3 main.py "收藏夹URL" --list-only
+### 配置文件格式
+```json
+{
+  "zhihuUrls": [
+    {
+      "name": "收藏夹名称",
+      "url": "https://www.zhihu.com/collection/123456789"
+    }
+  ],
+  "outputPath": "自定义输出路径（可选）",
+  "os": "操作系统类型（可选，支持自动检测）"
+}
 ```
 
-不下载图片：
+### 依赖包
+主要包：
+- `requests`: 向知乎 API 发送 HTTP 请求
+- `beautifulsoup4`: HTML 解析
+- `markdownify`: HTML 到 Markdown 转换
+- `tqdm`: 进度条
+- `lxml`: XML/HTML 解析器后端
 
-```bash
-python3 main.py "收藏夹URL" --no-images
+## 文件结构
+
+```
+/
+├── main.py              # 主导出脚本
+├── fetch_collections.py # 独立的收藏夹获取脚本
+├── utils.py             # 工具函数
+├── requirements.txt     # Python 依赖
+├── config.json          # 主配置文件
+├── config_examples.json # 配置示例文件
+├── zhihuUrls.json       # 旧版URL列表（向后兼容）
+├── cookies.json         # 认证 cookies（可选）
+├── test/                # 测试文件目录
+│   ├── README.md        # 测试说明文档
+│   ├── test_*.py        # 各种功能测试脚本
+│   └── __init__.py      # Python 包初始化文件
+└── downloads/           # 默认输出目录
+    ├── 收藏夹名称1/      # 按收藏夹名称分类的输出目录
+    │   ├── *.md         # 导出的 markdown 文件
+    │   └── assets/      # 下载的图片
+    ├── 收藏夹名称2/
+    ├── logs/            # 处理日志文件
+    │   ├── debug_*.log  # 调试日志
+    │   └── *.json       # 处理结果日志
+    └── debug/           # 调试HTML文件
+        ├── debug_answer_*.html  # 回答页面调试文件
+        └── debug_post_*.html    # 专栏文章调试文件
 ```
 
-指定输出目录：
+## 认证
 
-```bash
-python3 main.py "收藏夹URL" --output "./exports/zhihu"
-```
-
-## 参数说明
-
-| 参数 | 说明 | 默认值 |
-| --- | --- | --- |
-| `collection_url` | 收藏夹链接 | 无 |
-| `--interactive` | 进入交互模式 | 关闭 |
-| `--workers` | 并发线程数 | `4` |
-| `--retries` | 单个请求失败后的重试次数 | `3` |
-| `--timeout` | 请求超时时间（秒） | `15` |
-| `--min-delay` | 每篇完成后的最小随机等待时间 | `0.3` |
-| `--max-delay` | 每篇完成后的最大随机等待时间 | `1.2` |
-| `--limit` | 只导出前 N 篇 | 全部 |
-| `--output` | 自定义导出目录 | `downloads/剪藏` |
-| `--no-resume` | 不跳过已存在文件 | 默认跳过 |
-| `--no-images` | 不下载图片 | 默认下载 |
-| `--list-only` | 仅列出收藏内容，不执行导出 | 关闭 |
-
-## 私密收藏夹
-
-如果目标是私密收藏夹，需要先准备知乎登录态。
-
-项目会读取根目录下的 `cookies.json`。格式来自浏览器导出的 cookies 列表，脚本会自动转换成请求所需的字典结构。
-
-可以直接参考项目里的模板文件：
-
-```text
-cookies.example.json
-```
-
-复制一份并改名为：
-
-```text
-cookies.json
-```
-
-然后把里面的示例值替换成你自己浏览器里导出的真实知乎 cookies。
-
-注意：
-- `cookie_name_1`、`cookie_value_1` 这类只是占位符，不能直接使用
-- 如果 `cookies.json` 里仍然是示例值，访问私密收藏夹时通常会返回 `401 Authorization Required`
-- 项目现在会自动跳过非法或非 Latin-1 的 cookie 项，但这不等于可以使用伪造占位数据
-
-如果没有 `cookies.json`：
-- 程序仍可运行
-- 但私密内容通常无法访问
-- 某些公开内容也可能因为权限或风控而获取不完整
-
-一个最小可用模板如下：
-
+对于私密收藏夹，需要创建包含知乎会话 cookies 的 `cookies.json` 文件：
 ```json
 [
-  {
-    "name": "z_c0",
-    "value": "your_real_cookie_value"
-  },
-  {
-    "name": "d_c0",
-    "value": "your_real_cookie_value"
-  },
-  {
-    "name": "_zap",
-    "value": "your_real_cookie_value"
-  }
+  {"name": "cookie_name", "value": "cookie_value"},
+  ...
 ]
 ```
 
-## 导出结果说明
+如果 cookies 不可用，工具会优雅地回退到未认证模式。
 
-每篇内容会保存为一个 `.md` 文件，文件名来自标题并做了基础清洗，避免常见路径非法字符。
+## 功能特性
 
-Markdown 内容开头会附上原始链接，例如：
+### 核心功能
+- **批量处理**: 支持同时处理多个收藏夹
+- **自定义输出**: 支持用户指定输出目录，支持多种操作系统路径格式
+- **跨平台兼容**: 支持 Windows、Linux、macOS、FreeBSD、Solaris、Cygwin 等系统
+- **智能去重**: 检查已存在文件，避免重复下载
+- **详细日志**: 生成处理日志，记录每篇文章的下载状态
+- **实时日志**: 支持实时日志刷新，立即显示处理进度
+- **自动收藏夹获取**: 通过 `fetch_collections.py` 自动获取用户收藏夹列表
 
-```md
-> https://www.zhihu.com/question/xxx/answer/yyy
-```
+### 内容处理
+- 图片使用 Obsidian 风格的 `![[filename]]` 语法下载和引用
+- 链接卡片转换为带有卡片标题的纯文本
+- 引用和脚注经过处理以符合正确的 Markdown 格式
+- 文件名经过清理以兼容文件系统
+- 每个导出的文件顶部都包含原始 URL 作为引用块
+- 处理重复标题文件，自动添加URL ID后缀
 
-如果启用了图片下载，正文中的图片会被保存到 `assets` 目录，并以 Obsidian 风格引用。
-
-## 性能说明
-
-旧版本是单线程串行抓取，速度比较慢。当前版本已经做了这些优化：
-- 使用线程池并发导出文章
-- 使用 `requests.Session` 复用连接
-- 增加失败重试
-- 支持跳过已存在文件，适合增量执行
-
-但这不是越快越好。知乎这类站点有明显的访问频率限制，建议：
-- 日常使用 `3` 到 `6` 个线程
-- 收藏夹很大时先用 `--limit` 小范围测试
-- 如果频繁失败，先降低 `--workers`
-
-## 已知限制
-
-- 依赖知乎当前页面结构，页面改版后解析规则可能失效
-- 某些非回答、非专栏类型的收藏内容仍然会被跳过
-- 登录态失效时，私密收藏夹无法正常导出
-- 高并发下仍可能触发限流、超时或部分图片下载失败
-
-## 常见问题
-
-### 1. 为什么程序提示没有 `cookies.json`？
-
-因为你当前目录下没有登录态文件。公开收藏夹可以忽略，私密收藏夹不行。
-
-### 2. 为什么有些文章没有导出来？
-
-常见原因有几种：
-- 收藏内容类型当前不支持
-- 页面已经被删除或 404
-- 登录态失效
-- 请求超时或被限流
-
-### 3. 并发线程数应该设多少？
-
-通常 `4` 就够用。网络好、收藏夹大时可以试 `6`，不建议一开始就开太高。
-
-### 4. 已经导出过，再跑一次会怎样？
-
-默认会跳过同名已存在文件，适合增量更新。  
-如果你想强制重新生成，可以加 `--no-resume`。
-
-## 开发说明
-
-主入口在 [main.py](/Users/a1/Documents/GitHub/Export-Zhihu-Collections/main.py)。
-
-当前代码已经从最初的串行脚本改成了：
-- CLI 参数解析
-- 交互式配置收集
-- 独立请求客户端
-- 并发导出调度
-- Markdown 与图片处理
-
-如果后续继续演进，建议优先做这几件事：
-1. 继续拆分模块，把请求、解析、导出、CLI 分离
-2. 增加失败任务重跑
-3. 增加导出报告，例如成功数、失败原因、耗时统计
-4. 支持多个收藏夹批量导出
-
-## 免责声明
-
-本项目仅用于个人学习、归档和备份。请遵守知乎平台规则，并自行承担使用风险。
+### 错误处理和调试
+- **健壮的错误处理**: 单个文章失败不影响整体处理流程
+- **增强的HTML解析**: 支持多种知乎页面结构变化
+- **调试文件生成**: 自动保存无法解析的页面HTML到 `downloads/debug/` 目录
+- **详细错误日志**: 记录具体的错误信息和堆栈跟踪
+- **自动重试机制**: 对网络错误进行适当的重试
