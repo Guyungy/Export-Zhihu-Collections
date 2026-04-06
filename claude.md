@@ -64,18 +64,8 @@ cp config_examples.json config.json
 # 2. 运行导出工具（批量处理）
 python main.py
 
-# 3. 启动图形界面（推荐）
-python gui.py
-
 # 对于私密收藏夹，确保根目录下存在 cookies.json 文件
 ```
-
-### GUI 功能
-- 可视化编辑 `config.json` 中的收藏夹名称和 URL
-- 选择输出目录和系统类型
-- 一键保存配置
-- 一键拉取“我的收藏夹”列表
-- 一键启动导出，并在窗口内实时查看日志
 
 ### 配置文件格式
 ```json
