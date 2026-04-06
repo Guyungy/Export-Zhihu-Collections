@@ -1,9 +1,7 @@
 # Export-Zhihu-Collections
 
 ## 项目介绍
-一个功能强大的知乎收藏夹导出工具，支持将知乎收藏夹（公开和私密）批量导出为 Markdown 格式文件。支持自定义输出路径、跨平台兼容、图片下载和 Obsidian 兼容格式。支持使用大模型API一键生成文章总结。
-
-**同时提供 MCP Server**，可被 AI Agent (如 Claude Code) 直接调用，为大模型提供保存知乎收藏夹的能力。
+一个功能强大的知乎收藏夹导出工具，支持将知乎收藏夹（公开和私密）批量导出为 Markdown 格式文件。支持自定义输出路径、跨平台兼容、图片下载和 Obsidian 兼容格式。
 
 ## 主要特性
 
@@ -17,23 +15,24 @@
 - 🔍 **自动收藏夹获取**: 通过独立脚本自动获取用户收藏夹列表
 - 🛠️ **健壮错误处理**: 单个文章失败不影响整体处理流程
 - 🔧 **增强调试支持**: 自动生成调试文件，便于问题排查
-- 🤖 **MCP 支持**: 提供 MCP Server，可被 AI Agent 调用
 
----
 
-## 两种运行方式
+# 安装
+**Python 安装**：
+首先，确保您的系统已安装 Python。
 
-### 方式一：命令行运行（传统方式）
-
-适合直接在终端运行导出任务。
-
-#### 安装
+**依赖安装**：
+使用以下命令安装所需的依赖项：
 ```bash
 pip install -r requirements.txt
 ```
 
-#### 配置文件设置
 
+# 使用指南
+
+## 快速开始
+
+### 1. 配置文件设置
 首先创建主配置文件：
 ```bash
 # 复制配置示例文件
@@ -60,105 +59,17 @@ cp config_examples.json config.json
 
 其中zhihuUrls的获取可看 ![](./readme/image.png)
 
-#### 自动获取收藏夹（可选）
-
+### 2. 自动获取收藏夹（可选）
 如果你想自动获取所有收藏夹，可以先运行：
 ```bash
 python fetch_collections.py
 ```
 这将自动更新 `config.json` 文件中的收藏夹列表。
 
-#### 运行主程序
+### 3. 运行主程序
 ```bash
 python main.py
 ```
-
----
-
-### 方式二：MCP Server 运行（AI Agent 方式）
-
-适合被 Claude Code 或其他 AI 工具集成调用。
-
-#### 安装 MCP 依赖
-```bash
-# 安装MCP包
-pip install mcp
-```
-
-#### 启动 MCP Server
-
-```bash
-python mcp_server.py
-```
-
-Server 会通过 stdio 通信，可以在 Claude Code 或其他 MCP 客户端中使用。
-
-#### 可用工具
-
-| 工具名 | 说明 |
-|--------|------|
-| `list_collections` | 列出配置文件中所有知乎收藏夹 |
-| `export_collection` | 导出指定知乎收藏夹为Markdown文件 |
-| `get_collection_info` | 获取指定收藏夹的基本信息（文章数量等） |
-| `search_collections` | 在配置文件中搜索包含关键词的收藏夹 |
-
-##### list_collections
-
-```python
-# 返回格式化的收藏夹列表
-```
-
-##### export_collection
-
-参数：
-- `collection_url` (必需): 收藏夹URL
-- `collection_name` (可选): 收藏夹名称
-- `output_dir` (可选): 输出目录
-
-```python
-# 示例
-export_collection(
-    collection_url="https://www.zhihu.com/collection/123456789",
-    collection_name="Python学习",
-    output_dir="my_downloads"
-)
-```
-
-##### get_collection_info
-
-参数：
-- `collection_url` (必需): 收藏夹URL
-
-##### search_collections
-
-参数：
-- `keyword` (必需): 搜索关键词
-
-#### 在 Claude Code 中使用
-
-在项目根目录的 `CLAUDE.md` 或用户配置文件中的 MCP 配置段添加服务器配置：
-
-```json
-{
-  "mcpServers": {
-    "zhihu-collections": {
-      "command": "python",
-      "args": ["mcp_server.py"],
-      "env": {},
-      "cwd": "你的项目路径"
-    }
-  }
-}
-```
-
-然后就可以用自然语言调用：
-
-- "列出我的知乎收藏夹"
-- "导出收藏夹 https://www.zhihu.com/collection/123456789"
-- "搜索包含Python的收藏夹"
-- "获取收藏夹 https://www.zhihu.com/collection/123456789 的文章数量"
-
----
 
 ## 配置选项说明
 
@@ -246,11 +157,6 @@ export_collection(
 
 ## 更新日志
 
-### v2.2 MCP 支持
-- 🤖 **MCP Server**: 新增 `mcp_server.py`，支持被 AI Agent 直接调用
-- 📋 **4个工具**: 提供 list_collections / export_collection / get_collection_info / search_collections 工具
-- 🔌 **标准协议**: 遵循 MCP 协议，支持 Claude Code 等主流 AI 工具集成
-
 ### v2.1 增强功能
 - 🚀 **实时日志系统**: 支持实时日志刷新和立即显示处理进度
 - 🛠️ **健壮错误处理**: 修复了 TypeError 等关键错误，单个文章失败不影响整体处理
@@ -274,4 +180,3 @@ export_collection(
 - 优化抓取速度
 - 增加更多导出格式支持
 - GUI 界面开发
-- 第三方大模型API支持
