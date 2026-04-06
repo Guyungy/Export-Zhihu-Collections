@@ -3,6 +3,7 @@ import os
 import random
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from bs4 import BeautifulSoup
 import re
@@ -101,8 +102,18 @@ def load_cookies():
         with open('cookies.json', 'r', encoding='utf-8') as f:
             cookies_list = json.load(f)
         cookies_dict = {}
+        expired_cookie_names = []
+        now_timestamp = time.time()
         for cookie in cookies_list:
             cookies_dict[cookie['name']] = cookie['value']
+            expiration_date = cookie.get('expirationDate')
+            if expiration_date and expiration_date < now_timestamp:
+                expired_cookie_names.append(cookie['name'])
+
+        if expired_cookie_names:
+            unique_names = sorted(set(expired_cookie_names))
+            logging.warning(f"检测到已过期的 cookies: {', '.join(unique_names)}")
+            print(f"警告：检测到已过期的 cookies: {', '.join(unique_names)}，请重新导出最新知乎 cookies。")
         return cookies_dict
     except FileNotFoundError:
         print("未找到cookies.json文件，将使用无登录模式访问（部分内容可能无法获取）")
@@ -117,6 +128,9 @@ processing_log = []
 # 全局配置和路径管理
 config = {}
 base_output_path = None
+
+DEFAULT_DOWNLOAD_WORKERS = 6
+MAX_DOWNLOAD_WORKERS = 16
 
 # 设置调试日志
 def setup_debug_logging():
@@ -879,6 +893,83 @@ def flush_logs():
     sys.stdout.flush()
     sys.stderr.flush()
 
+def get_download_workers():
+    """获取正文下载并发数"""
+    raw_workers = config.get('downloadWorkers', DEFAULT_DOWNLOAD_WORKERS)
+    try:
+        worker_count = int(raw_workers)
+    except (TypeError, ValueError):
+        worker_count = DEFAULT_DOWNLOAD_WORKERS
+
+    worker_count = max(1, min(worker_count, MAX_DOWNLOAD_WORKERS))
+    return worker_count
+
+def build_reserved_file_path(base_dir, title, url, reserved_paths):
+    """
+    为当前任务预留唯一文件名，避免并发下载时重复标题发生文件名冲突
+    """
+    file_path = get_unique_filename(base_dir, title, url)
+    candidate_path = file_path
+
+    while candidate_path in reserved_paths:
+        base_name, ext = os.path.splitext(file_path)
+        duplicate_suffix = url.split('/')[-1]
+        candidate_path = f"{base_name}_{duplicate_suffix}{ext}"
+        if candidate_path in reserved_paths:
+            candidate_path = f"{base_name}_{duplicate_suffix}_{len(reserved_paths)}{ext}"
+
+    reserved_paths.add(candidate_path)
+    return candidate_path
+
+def download_single_article(task):
+    """下载单篇文章，供线程池调用"""
+    title = task["title"]
+    url = task["url"]
+    file_path = task["file_path"]
+
+    article_log = {
+        "name": title,
+        "url": url,
+        "status": ""
+    }
+
+    if is_article_already_downloaded(file_path, url):
+        article_log["status"] = "文章已存在,跳过下载"
+        return article_log
+
+    try:
+        logging.info(f"开始下载文章: {title}")
+        flush_logs()
+
+        if 'zhuanlan' in url:
+            content = get_single_post_content(url)
+        else:
+            content = get_single_answer_content(url)
+
+        if content == -1:
+            article_log["status"] = "文章下载失败, 原因:获取内容失败"
+            logging.warning(f"获取内容失败: {url}")
+            flush_logs()
+            return article_log
+
+        md = markdownify(content, heading_style="ATX")
+        md = '> %s\n' % url + md
+
+        with open(file_path, "w", encoding='utf-8') as md_file:
+            md_file.write(md)
+
+        article_log["status"] = "文章不存在,正常下载"
+        logging.info(f"文章下载成功: {title}")
+        flush_logs()
+        return article_log
+    except Exception as e:
+        article_log["status"] = f"文章下载失败, 原因:{str(e)}"
+        logging.error(f"下载文章时发生错误: {title}")
+        logging.error(f"错误详情: {str(e)}")
+        logging.error(f"URL: {url}")
+        flush_logs()
+        return article_log
+
 def process_single_collection(collection_name, collection_url):
     """处理单个收藏夹"""
     global current_collection_name, processing_log
@@ -926,65 +1017,40 @@ def process_single_collection(collection_name, collection_url):
     downloadDir = get_output_path(collection_name)
     if not os.path.exists(downloadDir):
         os.makedirs(downloadDir)
-    
-    for i in tqdm(range(len(urls)), desc=f"处理 {collection_name}"):
-        content = None
+
+    reserved_paths = set()
+    download_tasks = []
+    skipped_logs = []
+
+    for i in range(len(urls)):
         url = urls[i]
         title = titles[i]
-        
-        # 获取唯一的文件路径
-        file_path = get_unique_filename(downloadDir, title, url)
-        
-        # 初始化文章日志记录
-        article_log = {
-            "name": title,
-            "url": url,
-            "status": ""
-        }
-        
-        # 检查文件是否已存在且包含相同URL
+        file_path = build_reserved_file_path(downloadDir, title, url, reserved_paths)
+
         if is_article_already_downloaded(file_path, url):
-            article_log["status"] = "文章已存在,跳过下载"
-            collection_log["list"].append(article_log)
+            skipped_logs.append({
+                "name": title,
+                "url": url,
+                "status": "文章已存在,跳过下载"
+            })
             continue
-        
-        try:
-            logging.info(f"开始下载文章: {title}")
-            flush_logs()
-            
-            if url.find('zhuanlan') != -1:
-                content = get_single_post_content(url)
-            else:
-                content = get_single_answer_content(url)
-            
-            if content == -1:
-                article_log["status"] = f"文章下载失败, 原因:获取内容失败"
-                collection_log["list"].append(article_log)
-                logging.warning(f"获取内容失败: {url}")
-                flush_logs()
-                continue
-            
-            md = markdownify(content, heading_style="ATX")
-            md = '> %s\n' % url + md
-            
-            with open(file_path, "w", encoding='utf-8') as md_file:
-                md_file.write(md)
-            
-            article_log["status"] = "文章不存在,正常下载"
-            collection_log["list"].append(article_log)
-            logging.info(f"文章下载成功: {title}")
-            flush_logs()
-            
-            # 添加延时
-            time.sleep(random.randint(1, 5))
-            
-        except Exception as e:
-            article_log["status"] = f"文章下载失败, 原因:{str(e)}"
-            collection_log["list"].append(article_log)
-            logging.error(f"下载文章时发生错误: {title}")
-            logging.error(f"错误详情: {str(e)}")
-            logging.error(f"URL: {url}")
-            flush_logs()
+
+        download_tasks.append({
+            "title": title,
+            "url": url,
+            "file_path": file_path
+        })
+
+    collection_log["list"].extend(skipped_logs)
+
+    worker_count = get_download_workers()
+    print(f"使用 {worker_count} 个线程下载正文")
+
+    if download_tasks:
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = [executor.submit(download_single_article, task) for task in download_tasks]
+            for future in tqdm(as_completed(futures), total=len(futures), desc=f"处理 {collection_name}"):
+                collection_log["list"].append(future.result())
     
     # 将收藏夹日志添加到全局日志
     processing_log.append(collection_log)

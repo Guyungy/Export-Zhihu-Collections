@@ -108,8 +108,18 @@ def load_cookies():
         with open('cookies.json', 'r', encoding='utf-8') as f:
             cookies_list = json.load(f)
         cookies_dict = {}
+        expired_cookie_names = []
+        now_timestamp = time.time()
         for cookie in cookies_list:
             cookies_dict[cookie['name']] = cookie['value']
+            expiration_date = cookie.get('expirationDate')
+            if expiration_date and expiration_date < now_timestamp:
+                expired_cookie_names.append(cookie['name'])
+
+        if expired_cookie_names:
+            unique_names = sorted(set(expired_cookie_names))
+            logging.warning(f"检测到已过期的 cookies: {', '.join(unique_names)}")
+            print(f"警告：检测到已过期的 cookies: {', '.join(unique_names)}，请重新导出最新知乎 cookies。")
         return cookies_dict
     except FileNotFoundError:
         print("未找到cookies.json文件，将使用无登录模式访问（部分内容可能无法获取）")
