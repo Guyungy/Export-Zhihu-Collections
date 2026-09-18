@@ -49,7 +49,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-先抓取“我的收藏夹”列表，再写回 `config.json`：
+先抓取“我的收藏夹”列表，再写回 `config.json`（通常需要有效的 `cookies.json`）：
 
 ```bash
 python fetch_collections.py
