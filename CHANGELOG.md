@@ -5,6 +5,38 @@
 
 ---
 
+## [3.0.1] - 2026-09-20
+
+修掉 [issue #1](https://github.com/Guyungy/Export-Zhihu-Collections/issues/1)「编码错误」——
+一个从旧模板一路带过来的崩溃，报错信息完全指不到病因。
+
+### 修复
+
+- **cookies 里含中文不再直接崩溃**。`UnicodeEncodeError: 'latin-1' codec can't encode
+  characters in position 0-1: ordinal not in range(256)` 的根因是：HTTP 头只允许 latin-1 字符，
+  `http.client` 按 latin-1 严格编码写 socket，而 `Cookie` 头里混进了汉字 ——
+  请求在**连接建立之前**就挂了，栈顶指向 `http.client` 内部。
+  触发方式几乎都是照抄早期示例里的占位条目 `{"name": "自用", ...}`，只换了 `value`、留着中文 `name`，
+  于是 `Cookie` 头开头就是两个字，报错位置恰好 `position 0-1`。
+- 现在 `load_cookies()` 会**逐条剔除**无法放进请求头的条目（名字/值含非 ASCII、名字含空格或 `; , =`
+  分隔符、值含换行或控制字符），打印出**是哪一条、为什么**，并给出正确写法；
+  合法 cookie 不受影响 —— 一条占位条目不会连坐整份登录态。
+- `create_session()` 对自定义请求头做同样的字符集检查，避免换个地方再炸一次。
+- CLI 入口加兜底：万一是别的路径漏出 `UnicodeEncodeError`，也会翻译成
+  「cookies 的 name 要写成英文键名」这类可执行提示，而不是抛一段 http.client 栈。
+
+### 新增
+
+- `test/test_cookies.py`：24 项离线测试。含**根因固化断言**（中文 cookie 名必然在 `position 0-1` 失败）、
+  过滤前后行为对照（未过滤必崩 → 过滤后可安全发请求）、以及「默认请求头全部 latin-1 可编码」的守门测试。
+- README 新增该报错的排错条目，并在「准备 cookies」一节前置警告。
+
+### 文档
+
+- 测试计数 142 → 166（README 徽章 / 特性表 / 测试章节 / 英文段 / CONTRIBUTING）。
+
+---
+
 ## [3.0.0] - 2026-09-20
 
 一次以「可维护性 + 抗失败」为目标的重构。对外行为向后兼容（`main.py` 的公共函数名、配置文件字段都没变）。

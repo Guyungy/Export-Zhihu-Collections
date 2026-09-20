@@ -7,7 +7,7 @@
 [![CI](https://github.com/Guyungy/Export-Zhihu-Collections/actions/workflows/ci.yml/badge.svg)](https://github.com/Guyungy/Export-Zhihu-Collections/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.8%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)]()
-[![Tests](https://img.shields.io/badge/Tests-142%20passed%20offline-0A9EDC?logo=pytest&logoColor=white)](test/)
+[![Tests](https://img.shields.io/badge/Tests-166%20passed%20offline-0A9EDC?logo=pytest&logoColor=white)](test/)
 [![Last commit](https://img.shields.io/github/last-commit/Guyungy/Export-Zhihu-Collections?color=blue)](https://github.com/Guyungy/Export-Zhihu-Collections/commits/main)
 
 [![Obsidian](https://img.shields.io/badge/Obsidian-friendly-7C3AED?logo=obsidian&logoColor=white)]()
@@ -65,7 +65,7 @@
 | 🧵 **流式读取** | 专栏长文按块读取 + 独立放宽的读超时，正文再长也不容易中途断流 |
 | 🪵 **可追溯** | 每次运行产出 `logs/*.log`（过程）与 `logs/*.json`（逐篇结果，含正文来源 `page`/`api`） |
 | 💻 **跨平台** | macOS / Windows / Linux / Cygwin 路径正确解析，输出目录可按系统分别配置 |
-| 🧪 **离线测试** | 142 项 pytest，不联网、不需要 cookies、0.2 秒跑完，CI 三版本矩阵验证 |
+| 🧪 **离线测试** | 166 项 pytest，不联网、不需要 cookies、0.2 秒跑完，CI 三版本矩阵验证 |
 
 ---
 
@@ -179,6 +179,14 @@ python main.py                # 紧接着直接导出
 ```
 
 也兼容浏览器插件导出的完整列表（带 `domain` / `expirationDate`）和 `{"名字": "值"}` 对象两种格式。
+
+> [!IMPORTANT]
+> `name` 必须是**英文键名**，中文只能写在说明文字里，不能出现在 `name` 或 `value` 中。
+> HTTP 头只支持 latin-1，字段里只要有一个汉字，程序就会在发请求前直接报
+> `UnicodeEncodeError: 'latin-1' codec can't encode characters in position 0-1` ——
+> 报错位置指向 `http.client`，完全看不出是 cookies 的问题。
+> v3.0.1 起这类条目会被自动剔除并提示原因，但**被剔除就等于没登录**，所以还是按示例写对最稳。
+> 详见 [常见问题](#-常见问题)。
 
 > [!WARNING]
 > `cookies.json` 等同于账号登录凭证。它**已被 `.gitignore` 忽略**，切勿提交到任何仓库、也不要贴进 issue。
@@ -447,7 +455,7 @@ Export-Zhihu-Collections/
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                      # 142 项，全部离线：不联网、不需要 cookies、0.2 秒
+pytest                      # 166 项，全部离线：不联网、不需要 cookies、0.2 秒
 ```
 
 | 测试文件 | 项数 | 覆盖范围 |
@@ -485,6 +493,43 @@ CI 在 Python 3.8 / 3.11 / 3.13 上跑同一套测试，外加 `compileall` 语�
 ---
 
 ## ❓ 常见问题
+
+<details>
+<summary><b>报 <code>UnicodeEncodeError: 'latin-1' codec can't encode characters in position 0-1</code>（编码错误）？</b></summary>
+
+cookies 文件里混进了中文 —— 而且通常是 **`name`** 而不是 `value`。
+
+HTTP 头只允许 latin-1 字符，`http.client` 也是按 latin-1 **严格编码**后再写进 socket 的。
+所以只要 `Cookie` 头里出现汉字，请求会在**建立连接之前**就崩掉，栈顶指向 `http.client` 内部，
+报错信息完全看不出是哪个配置项写错了。
+
+典型踩法是把示例里的占位条目当了真 cookie。仓库早期模板长这样：
+
+```json
+[
+  { "name": "自用", "value": "Cookie修sasd11asdasd改这里" },
+  { "name": "cookie_name_2", "value": "cookie_value_2" }
+]
+```
+
+只替换 `value`、留着 `"name": "自用"`，`Cookie` 头就变成 `自用=<你的真实票据>`，
+报错位置恰好是 `position 0-1` —— 正是开头那两个汉字。
+
+**怎么修**：`name` 必须是浏览器里真实的**英文键名**，中文只能出现在注释里、不能出现在字段值里：
+
+```json
+[
+  { "name": "z_c0",      "value": "把浏览器里 z_c0 的值粘到这里" },
+  { "name": "d_c0",      "value": "把浏览器里 d_c0 的值粘到这里" },
+  { "name": "SESSIONID", "value": "把浏览器里 SESSIONID 的值粘到这里" }
+]
+```
+
+直接复制 [`cookies.example.json`](cookies.example.json) 最省事，字段填法见 [准备 cookies](#-准备-cookies)。
+
+v3.0.1 起已内置防线：载入 cookies 时会**逐条剔除**名字/值含非 ASCII 的条目，打印出是哪一条、为什么，
+剩下的合法 cookie 照常使用 —— 你不会再看到那个看不懂的 latin-1 报错，只会看到该改哪一行。
+</details>
 
 <details>
 <summary><b>导出的图片语法 <code>![[xxx.jpg]]</code> 在别的编辑器里不显示？</b></summary>
@@ -639,7 +684,7 @@ python tools/analyze_issue.py
 | 正文兜底范围 | 回答 / 专栏 / 想法 | 回答 |
 | 压缩编码协商 | 按本机解码能力声明 | 声明 `br` / `zstd`（本机无解码库时正文会乱码） |
 | 失败处理 | 不写占位文件，可无损重跑 | 无对应处理 |
-| 测试 | 142 项离线 pytest + 三版本 CI | `test/` 下 19 个手动脚本 |
+| 测试 | 166 项离线 pytest + 三版本 CI | `test/` 下 19 个手动脚本 |
 | 许可证 | GPL-3.0 | 未声明 |
 | 收藏夹并发 | 线程池 | 串行 + 随机 sleep |
 
@@ -671,7 +716,7 @@ Obsidian / Logseq / Typora. Images are downloaded into `assets/` and rewritten t
 
 Highlights: three content-fetch routes (page → streaming → OpenAPI fallback),
 failed fetches never leave a bogus file behind, layered retries with a global rate limit,
-cross-platform path handling, and 142 offline tests (no network, no cookies required).
+cross-platform path handling, and 166 offline tests (no network, no cookies required).
 
 ```bash
 pip install -r requirements.txt

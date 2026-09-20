@@ -13,9 +13,10 @@ from __future__ import annotations
 import json
 import logging
 import pathlib
+import re
 import threading
 import time
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -101,6 +102,127 @@ RETRY_STATUS_CODES = (429, 500, 502, 503, 504)
 # 需要保留的关键 cookie，缺失时给出更明确的提示
 IMPORTANT_COOKIES = ("z_c0", "d_c0", "SESSIONID")
 
+# ---------------------------------------------------------------------------
+# HTTP 头的字符集防线
+# ---------------------------------------------------------------------------
+#
+# 请求行与请求头在 http.client 里是按 **latin-1（ISO-8859-1）严格编码**后写进
+# socket 的。只要 header 值里混进一个中文字符，请求在连接建立之前就会抛：
+#
+#   UnicodeEncodeError: 'latin-1' codec can't encode characters in position 0-1:
+#   ordinal not in range(256)
+#
+# 这个报错的位置指向 http.client 内部，完全看不出是哪个配置项出了问题（issue #1：
+# 用户把示例里占位的 ``"name": "自用"`` 当成真 cookie 名留着，于是 ``Cookie`` 头
+# 的第一个字符就是汉字，报错位置恰好是 0-1）。所以在读配置阶段就拦下来。
+
+#: RFC 6265 的 cookie-name 合法字符集（token），不含空格与 ``; , =`` 等分隔符。
+_COOKIE_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+
+#: 遇到编码类报错时给用户看的话术。
+NON_LATIN1_HINT = (
+    "HTTP 请求头只能承载 latin-1 字符，出现中文就会在发请求前直接抛 "
+    "UnicodeEncodeError。最常见的原因是 cookies 文件里 cookie 的 name 不是浏览器里的"
+    "英文键名（例如把示例中的占位名「自用」一起复制了过来）——请改成真实键名，"
+    "如 z_c0 / d_c0 / SESSIONID。"
+)
+
+
+def first_non_latin1(text: str) -> Optional[str]:
+    """返回 ``text`` 里第一个无法用 latin-1 编码的字符；全部合法时返回 ``None``。"""
+    for char in text:
+        if ord(char) > 0xFF:
+            return char
+    return None
+
+
+def _cookie_name_problem(name: str) -> Optional[str]:
+    """检查 cookie 名；合法返回 ``None``。"""
+    bad = first_non_latin1(name)
+    if bad is not None:
+        return "名字含非 ASCII 字符 %r" % bad
+    if not _COOKIE_NAME_RE.match(name):
+        return "名字含空格或 ; , = 等分隔符，会破坏 Cookie 头"
+    return None
+
+
+def _cookie_value_problem(value: str) -> Optional[str]:
+    """检查 cookie 值；合法返回 ``None``。"""
+    bad = first_non_latin1(value)
+    if bad is not None:
+        return "值含非 ASCII 字符 %r" % bad
+    if any(ord(char) < 0x20 for char in value):
+        return "值含换行或控制字符"
+    return None
+
+
+def split_unsafe_cookies(
+    cookies: Mapping[str, Any]
+) -> Tuple[Dict[str, str], List[Tuple[str, str]]]:
+    """把不能安全塞进 ``Cookie`` 头的条目挑出来。
+
+    返回 ``(可用条目, [(名字, 原因), ...])``。坏条目**逐条剔除**而不是整份丢弃，
+    以免一条占位 cookie 让所有正常 cookie 一起失效。
+    """
+    safe: Dict[str, str] = {}
+    dropped: List[Tuple[str, str]] = []
+
+    for raw_name, raw_value in cookies.items():
+        name = str(raw_name)
+        value = "" if raw_value is None else str(raw_value)
+
+        if not name:
+            dropped.append((name, "cookie 名为空"))
+            continue
+
+        problem = _cookie_name_problem(name)
+        if problem is not None:
+            dropped.append((name, problem))
+            continue
+
+        problem = _cookie_value_problem(value)
+        if problem is not None:
+            dropped.append((name, problem))
+            continue
+
+        safe[name] = value
+
+    return safe, dropped
+
+
+def split_unsafe_headers(
+    headers: Mapping[str, Any]
+) -> Tuple[Dict[str, str], List[Tuple[str, str]]]:
+    """剔除值里含非 ASCII 的自定义请求头（同样会炸在 latin-1 编码上）。"""
+    safe: Dict[str, str] = {}
+    dropped: List[Tuple[str, str]] = []
+
+    for raw_name, raw_value in headers.items():
+        name = str(raw_name)
+        value = str(raw_value)
+        bad = first_non_latin1(value)
+        if bad is not None:
+            dropped.append((name, "值含非 ASCII 字符 %r" % bad))
+            continue
+        if any(ord(char) < 0x20 for char in value):
+            dropped.append((name, "值含换行或控制字符"))
+            continue
+        safe[name] = value
+
+    return safe, dropped
+
+
+def describe_dropped_entries(dropped: Iterable[Tuple[str, str]], what: str) -> str:
+    """把被剔除的条目拼成一段人能照着改的提示。"""
+    items = list(dropped)
+    lines = [
+        "已跳过 %d 条无法使用的 %s（HTTP 头只支持 latin-1 字符）：" % (len(items), what)
+    ]
+    for name, reason in items:
+        lines.append("  - %s：%s" % (name or "(空名字)", reason))
+    lines.append("提示：" + NON_LATIN1_HINT)
+    return "\n".join(lines)
+
 
 def build_headers(extra: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
     """返回一份请求头副本，可追加自定义字段。"""
@@ -162,6 +284,14 @@ def load_cookies(path: Optional[str] = None, warn_expired: bool = True) -> Dict[
         print("cookies 文件结构无法识别，将忽略该文件")
         return {}
 
+    # 含中文的 cookie 名/值会让 requests 在发请求前抛 UnicodeEncodeError（issue #1）：
+    # 这里逐条剔除并解释原因，剩下的正常 cookie 照常可用。
+    cookies, dropped = split_unsafe_cookies(cookies)
+    if dropped:
+        report = describe_dropped_entries(dropped, "cookie")
+        print(report)
+        logging.warning("%s（来源: %s）", report.replace("\n", " | "), cookie_path)
+
     if warn_expired and expired_names:
         unique_names = sorted(set(expired_names))
         warning = "检测到已过期的 cookies: %s，请重新导出知乎 cookies" % ", ".join(unique_names)
@@ -186,7 +316,14 @@ def create_session(
 ) -> requests.Session:
     """创建一个带重试策略的会话对象。"""
     session = requests.Session()
-    session.headers.update(build_headers(headers))
+
+    extra, dropped_headers = split_unsafe_headers(headers or {})
+    if dropped_headers:
+        report = describe_dropped_entries(dropped_headers, "请求头")
+        print(report)
+        logging.warning(report.replace("\n", " | "))
+
+    session.headers.update(build_headers(extra))
 
     retry = Retry(
         total=retries,

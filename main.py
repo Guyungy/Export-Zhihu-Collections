@@ -905,5 +905,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     return 0
 
 
+def run(argv: Optional[Sequence[str]] = None) -> int:
+    """命令行入口包装：把「非 ASCII 进了请求头」这类崩溃翻译成可执行的提示。
+
+    ``UnicodeEncodeError: 'latin-1' codec can't encode characters in position 0-1``
+    是这条链路上最迷惑人的报错之一（issue #1）——栈顶落在 ``http.client`` 里，
+    完全看不出是哪个配置项写的。这里兜一层，直接告诉用户去哪儿改。
+    """
+    try:
+        return main(argv)
+    except UnicodeEncodeError as exc:
+        print("\n[编码错误] %s\n原始报错: %s" % (http_mod.NON_LATIN1_HINT, exc))
+        logging.error("请求头编码失败: %s", exc)
+        return 2
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run())
