@@ -28,6 +28,8 @@
 - 懒加载图片还原：把 `data-original` 里的真实图片地址提升为 `src`。
 - 新增配置项：`pageTimeout` / `longPageTimeout` / `fetchRetries` / `apiFallback`。
 - `pyproject.toml`（打包元数据 + pytest 配置）、`requirements-dev.txt`、GitHub Actions CI。
+- `tools/check_readme_anchors.py`：文档锚点自检，专治 emoji 标题里那个不可见的变体选择符
+  （`## ⚙️ 配置说明` 的锚点是 `#️-配置说明`，少一个不可见字符链接就静默失效）。已接入 CI。
 
 ### 修复
 

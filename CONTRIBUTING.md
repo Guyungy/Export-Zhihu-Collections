@@ -20,10 +20,15 @@ pytest                                               # 应该 136 passed，且�
 
 ```bash
 python -m compileall -q main.py fetch_collections.py get_collections.py utils.py zhihu_export tools
+python tools/check_readme_anchors.py README.md CHANGELOG.md CONTRIBUTING.md   # 改了标题就顺手跑
 pytest
 ```
 
-两条都过再提 PR。CI 会在 Python 3.8 / 3.11 / 3.13 上跑同一套测试。
+三条都过再提 PR。CI 会在 Python 3.8 / 3.11 / 3.13 上跑同一套测试。
+
+> 提到了 README 的标题？跑一下锚点自检。GitHub 的锚点会保留 emoji 后面的变体选择符
+> （`## ⚙️ 配置说明` 的锚点是 `#️-配置说明`，`#` 后面有个不可见字符），少写一个不可见字符，
+> 目录链接就会静默失效，肉眼完全看不出来。`tools/check_readme_anchors.py` 专门抓这个。
 
 ## 代码约定
 

@@ -15,7 +15,7 @@
 [![PRs](https://img.shields.io/badge/PRs-welcome-brightgreen)](CONTRIBUTING.md)
 [![No MCP](https://img.shields.io/badge/MCP-%E4%B8%8D%E5%8C%85%E5%90%AB-lightgrey)](#-致谢)
 
-[🚀 快速开始](#-快速开始) · [⚙️ 配置](#-配置说明) · [🖥️ 命令行](#-命令行参数) · [❓ 常见问题](#-常见问题) · [📄 更新日志](CHANGELOG.md) · [🐛 提交问题](https://github.com/Guyungy/Export-Zhihu-Collections/issues/new)
+[🚀 快速开始](#-快速开始) · [⚙️ 配置](#️-配置说明) · [🖥️ 命令行](#️-命令行参数) · [❓ 常见问题](#-常见问题) · [📄 更新日志](CHANGELOG.md) · [🐛 提交问题](https://github.com/Guyungy/Export-Zhihu-Collections/issues/new)
 
 </div>
 
@@ -31,8 +31,8 @@
 - [🎬 实际长什么样](#-实际长什么样)
 - [🚀 快速开始](#-快速开始)
 - [🍪 准备 cookies](#-准备-cookies)
-- [⚙️ 配置说明](#-配置说明)
-- [🖥️ 命令行参数](#-命令行参数)
+- [⚙️ 配置说明](#️-配置说明)
+- [🖥️ 命令行参数](#️-命令行参数)
 - [📁 输出结构](#-输出结构)
 - [🧭 工作原理](#-工作原理)
 - [🧩 项目结构](#-项目结构)
@@ -451,7 +451,8 @@ pytest                      # 136 项，全部离线：不联网、不需要 coo
 测试用假会话（`test/helpers.py`）+ 4 份页面样例（`test/fixtures/*.html`），所以**知乎改版不会让测试随机变红**。
 真实抓到的错误响应（`need_login` / `ERR_LOGIN_TICKET_EXPIRED` / 风控 `code 10003`）也都固化成了回归用例。
 
-CI 在 Python 3.8 / 3.11 / 3.13 上跑同一套测试：`.github/workflows/ci.yml`。
+CI 在 Python 3.8 / 3.11 / 3.13 上跑同一套测试，外加 `compileall` 语法自检与文档锚点自检：
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml)。
 
 `test/legacy/` 里是历史调试阶段留下的自检脚本（按源码文本做模式匹配的那批），**不参与 pytest 收集**，仅作记录留存。
 

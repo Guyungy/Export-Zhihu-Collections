@@ -31,5 +31,8 @@ jobs:
       - name: 语法自检
         run: python -m compileall -q main.py fetch_collections.py get_collections.py utils.py zhihu_export tools
 
+      - name: 检查文档内部锚点
+        run: python tools/check_readme_anchors.py README.md CHANGELOG.md CONTRIBUTING.md
+
       - name: 运行测试（全部离线，不联网、不需要 cookies）
         run: pytest
