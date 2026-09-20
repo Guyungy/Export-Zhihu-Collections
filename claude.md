@@ -31,11 +31,13 @@ zhihu_export/          → 内部实现包
   api.py               → 正文 API 兜底（answers / articles / pins）+ 错误翻译
   converter.py         → ImageDownloader + ObsidianStyleConverter + DOM 清理
   logging_utils.py     → 日志初始化与强制刷新
-tools/                 → 诊断脚本（analyze_issue.py / debug_page.py）
+tools/                 → 诊断脚本（analyze_issue.py / debug_page.py / check_readme_anchors.py）
 test/                  → pytest 测试（离线） + fixtures + legacy 历史脚本
 .github/workflows/ci.yml → CI：Python 3.8 / 3.11 / 3.13 跑同一套 pytest
 CHANGELOG.md           → 更新日志（对外说明改了什么、为什么）
 CONTRIBUTING.md        → 贡献指南（测试怎么跑、哪些约定不能破）
+config.example.json    → 配置模板（可直接复制为 config.json；config.json 本身已 gitignore）
+cookies.example.json   → cookies 模板（字段名对照，值是假的）
 ```
 
 ### 关键约定
@@ -51,6 +53,9 @@ CONTRIBUTING.md        → 贡献指南（测试怎么跑、哪些约定不能�
    这是 **thread-local**，多线程下不能改成全局变量。
 8. **`.gitignore` 不要用 `*.json` 这类宽通配**：会吞掉新增的配置文件。
 9. **`cookies.json` 永不入库**：历史上曾误提交过（见 git 历史 `eaac68d`），别再犯。
+   同理 **`config.json` 也不入库**（含个人收藏夹清单），仓库里只留 `config.example.json`。
+   `config.example.json` 必须始终是「复制过去就能跑」的合法配置 ——
+   `test_config.py::test_example_config_is_usable` 会检查这一点，加字段时记得同步示例。
 10. **改行为就补测试 + 记 CHANGELOG**：测试必须是**离线**的（假会话 + `test/fixtures/*.html`），
    不要写联网测试 —— 知乎一改版就会随机变红。README 里的数字（测试项数、默认值）改了代码要同步改。
 
@@ -99,7 +104,7 @@ Windows 路径跑到非 Windows 系统上会被识别并回退到 `downloads/`�
 
 `os` 留空表示自动检测；`downloadWorkers` / `imageWorkers` 会被夹到 1–16，`requestDelay` 夹到 0–10，
 `pageTimeout` / `longPageTimeout` 夹到 1–600，`fetchRetries` 夹到 0–10。
-完整样例见 `config_examples.json`。
+可直接复制使用的完整模板见 `config.example.json`（`config.json` 已 gitignore，不入库）。
 
 ## 正文抓取路线（改这块前先读）
 

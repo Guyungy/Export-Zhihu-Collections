@@ -48,21 +48,29 @@
 ### 安全与仓库卫生
 
 - `cookies.json` 取消版本跟踪并加入 `.gitignore`，改提供 `cookies.example.json`。
+- `config.json` 与旧版 `zhihuUrls.json` 一并取消跟踪并加入 `.gitignore`（两者都含你个人的收藏夹清单），
+  仓库里只保留可直接复制使用的 `config.example.json`。原来那个 `config_examples.json`
+  已删除 —— 它顶层是多场景字典，照文档复制过来只会得到空清单。
 - 依赖加上下界（并锁定大版本上界），避免上游破坏性变更直接打进来。
 
 ### 测试
 
-- 新增 136 项**离线** pytest（假会话 + 4 份知乎页面样例）：不联网、不需要 cookies、0.2 秒跑完。
+- 新增 142 项**离线** pytest（假会话 + 4 份知乎页面样例）：不联网、不需要 cookies、0.2 秒跑完。
   覆盖配置解析、文件名边界、收藏夹分页、401 提示、图片缓存与降级、
   API 兜底 URL 解析与错误翻译、403 → API 回退、流式读取、端到端整夹导出。
 - 真实响应固化：cookies 过期时抓到的 `need_login` / `ERR_LOGIN_TICKET_EXPIRED` / `code 10003`
   都变成了回归用例，而不是写在注释里的口头结论。
+- 新增两条「防回归」用例，锁住本轮踩过的坑：
+  示例配置必须「复制过去就能跑」且不含真实收藏夹 ID；文档里所有
+  `cp <file> config.json` 的目标文件必须真实存在。
 
 ### 文档
 
 - README 重写：徽章、目录、特性表、真实终端输出、导出效果、配置与 CLI 参数表、
   Mermaid 流程图（含兜底分支）、项目结构、测试与 CI、路线图、FAQ、隐私说明、致谢。
 - 新增 `CHANGELOG.md`（本文件）与 `CONTRIBUTING.md`。
+- 修掉文档里一处会误导新用户的命令：原来指向的 `config_examples.json` 顶层是多场景字典，
+  照抄复制过来只会得到空清单；已统一改为复制 `config.example.json`。
 
 ### 说明
 

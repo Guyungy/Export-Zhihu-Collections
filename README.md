@@ -7,7 +7,7 @@
 [![CI](https://github.com/Guyungy/Export-Zhihu-Collections/actions/workflows/ci.yml/badge.svg)](https://github.com/Guyungy/Export-Zhihu-Collections/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.8%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)]()
-[![Tests](https://img.shields.io/badge/Tests-136%20passed%20offline-0A9EDC?logo=pytest&logoColor=white)](test/)
+[![Tests](https://img.shields.io/badge/Tests-142%20passed%20offline-0A9EDC?logo=pytest&logoColor=white)](test/)
 [![Last commit](https://img.shields.io/github/last-commit/Guyungy/Export-Zhihu-Collections?color=blue)](https://github.com/Guyungy/Export-Zhihu-Collections/commits/main)
 
 [![Obsidian](https://img.shields.io/badge/Obsidian-friendly-7C3AED?logo=obsidian&logoColor=white)]()
@@ -65,7 +65,7 @@
 | 🧵 **流式读取** | 专栏长文按块读取 + 独立放宽的读超时，正文再长也不容易中途断流 |
 | 🪵 **可追溯** | 每次运行产出 `logs/*.log`（过程）与 `logs/*.json`（逐篇结果，含正文来源 `page`/`api`） |
 | 💻 **跨平台** | macOS / Windows / Linux / Cygwin 路径正确解析，输出目录可按系统分别配置 |
-| 🧪 **离线测试** | 136 项 pytest，不联网、不需要 cookies、0.2 秒跑完，CI 三版本矩阵验证 |
+| 🧪 **离线测试** | 142 项 pytest，不联网、不需要 cookies、0.2 秒跑完，CI 三版本矩阵验证 |
 
 ---
 
@@ -77,8 +77,8 @@
 $ python main.py
 共找到 33 个收藏夹待处理
 ----------------------------------------------------
- 1. 技术-效率工具                343826248 (126 条)
- 2. 赚钱-金融市场                630144608 (98 条)
+ 1. 技术-效率工具                123456789 (126 条)
+ 2. 赚钱-金融市场                123456790 (98 条)
 ----------------------------------------------------
 
 开始处理收藏夹: 技术-效率工具
@@ -109,7 +109,7 @@ $ python main.py --list
 cookies 已失效，知乎接口拒绝访问（ERR_LOGIN_TICKET_EXPIRED）
 解决办法：重新导出登录态 cookies.json（参考 README「准备 cookies」）
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
- 1. 技术-效率工具                  343826248 (0 条)
+ 1. 技术-效率工具                  123456789 (0 条)   ← 收藏夹 ID 已替换为占位数字
 ```
 
 导出后的 Markdown 见 [输出结构](#-输出结构)。
@@ -123,7 +123,7 @@ cookies 已失效，知乎接口拒绝访问（ERR_LOGIN_TICKET_EXPIRED）
 pip install -r requirements.txt
 
 # 2. 准备配置（复制示例再改）
-cp config_examples.json config.json
+cp config.example.json config.json
 
 # 3. 先验证配置：每个收藏夹只试抓 1 条
 python main.py --dry-run
@@ -137,7 +137,7 @@ python main.py
 ```json
 {
   "zhihuUrls": [
-    { "name": "技术-效率工具", "url": "https://www.zhihu.com/collection/343826248" }
+    { "name": "技术-效率工具", "url": "https://www.zhihu.com/collection/123456789" }
   ],
   "outputPath": "",
   "openCollection": false
@@ -145,7 +145,11 @@ python main.py
 ```
 
 > 输出的收藏夹链接就是浏览器地址栏里的 `https://www.zhihu.com/collection/<数字 ID>`；
-> 也可以直接只填 `343826248` 这样的 ID。
+> 也可以直接只填 `123456789` 这样的 ID。
+>
+> `config.example.json` 里已经写好全部字段与默认值，复制过去改掉 `zhihuUrls` 就能用。
+> **`config.json` 不会被提交** —— 它含你个人的收藏夹清单，`.gitignore` 已排除；
+> 忘了复制时程序会直接提示你这条 `cp` 命令。
 
 ### 自动抓取「我的收藏夹」清单
 
@@ -190,6 +194,12 @@ python tools/analyze_issue.py     # cookies → 登录接口 → 页面结构 �
 ---
 
 ## ⚙️ 配置说明
+
+配置文件名固定为 `config.json`（放在项目根目录）：
+
+```bash
+cp config.example.json config.json    # 仓库里只提供示例，配置文件本身不入库
+```
 
 ```json
 {
@@ -237,14 +247,15 @@ python tools/analyze_issue.py     # cookies → 登录接口 → 页面结构 �
 
 ```json
 "outputPath": {
-  "windows": "D:/Documents/Zhihu知乎",
+  "windows": "D:/Documents/ZhihuExports",
   "macos": "~/Documents/ZhihuExports",
   "linux": "/home/user/zhihu-exports"
 }
 ```
 
 > 把 Windows 路径填在 macOS 上不会生成一个名叫 `D:` 的怪目录 —— 程序会识别出不匹配并回退到
-> `downloads/`，同时给出提示。Cygwin 的 `/cygdrive/d/...` 也认。完整样例见 `config_examples.json`。
+> `downloads/`，同时给出提示。Cygwin 的 `/cygdrive/d/...` 也认。
+> 可直接复制使用的完整模板见 `config.example.json`。
 
 ---
 
@@ -272,7 +283,7 @@ python main.py [选项]
 
 ```bash
 # 只导出两个收藏夹、限制并发、放慢请求
-python main.py --only 技术-效率工具 --only 630144608 --workers 4 --delay 1.0
+python main.py --only 技术-效率工具 --only 123456789 --workers 4 --delay 1.0
 
 # 先看看有哪些收藏夹、各有多少条
 python main.py --list
@@ -286,7 +297,7 @@ python main.py --output ~/Desktop/zhihu-backup
 | 参数 | 说明 |
 | --- | --- |
 | `--config PATH` | 指定要写回的配置文件 |
-| `--urls` | 改为写入旧版 `zhihuUrls.json` |
+| `--urls` | 改为写入旧版 `zhihuUrls.json`（同样不被仓库跟踪） |
 | `--max-pages N` | HTML 翻页上限，默认 50 |
 | `--dry-run` | 只打印结果，不写任何文件 |
 
@@ -422,8 +433,8 @@ Export-Zhihu-Collections/
 │   ├── fixtures/              #   知乎页面样例 HTML
 │   └── legacy/                #   历史自检脚本（pytest 不收集）
 ├── .github/workflows/ci.yml   # CI：3 个 Python 版本跑同一套测试
-├── config.json                # 你的配置
-├── config_examples.json       # 各种场景的配置样例
+├── config.example.json        # 配置模板（复制成 config.json 使用）
+├── config.json                # 你的配置（已 gitignore，不入库）
 ├── cookies.example.json       # cookies 模板
 ├── CHANGELOG.md               # 更新日志
 ├── CONTRIBUTING.md            # 贡献指南
@@ -436,14 +447,14 @@ Export-Zhihu-Collections/
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                      # 136 项，全部离线：不联网、不需要 cookies、0.2 秒
+pytest                      # 142 项，全部离线：不联网、不需要 cookies、0.2 秒
 ```
 
 | 测试文件 | 项数 | 覆盖范围 |
 | --- | --- | --- |
 | `test/test_api.py` | 56 | API 兜底的 URL 解析、pin 分块拼装、错误翻译、403 回退、流式读取、懒加载图还原 |
 | `test/test_collections.py` | 24 | 收藏夹 ID 解析、条目类型解析、分页、401 提示、页面改版兜底 |
-| `test/test_config.py` | 18 | 配置加载、跨平台路径解析、并发数边界、旧版 `zhihuUrls.json` 兼容 |
+| `test/test_config.py` | 24 | 配置加载、跨平台路径解析、并发数边界、旧版 `zhihuUrls.json` 兼容、示例配置可用性、文档 `cp` 目标存在性 |
 | `test/test_converter.py` | 17 | 图片下载 / 缓存 / 命名冲突 / 失败降级、链接卡片、mailto、脚注回链 |
 | `test/test_main_integration.py` | 15 | 端到端：整夹导出、重复运行跳过、失败不写占位文件、`--list` / `--skip-images` |
 | `test/test_utils.py` | 6 | 文件名清理、非法字符、按字节截断 |
@@ -591,6 +602,7 @@ python tools/analyze_issue.py
 | --- | --- |
 | 数据流向 | 只与 `zhihu.com` 通信，不经任何第三方服务、不上报任何统计 |
 | cookies | 只用于向知乎发起请求；`.gitignore` 已排除，程序也不会打印其值 |
+| 个人配置 | `config.json`（含你的收藏夹清单）同样已被 `.gitignore` 排除，仓库里只有 `config.example.json` |
 | 导出内容 | 只落在你指定的本地目录 |
 | 网络依赖 | 测试全部离线；CI 也不联网抓知乎 |
 | 唯一的凭据风险 | 你自己把 `cookies.json` 提交进仓库或贴进 issue —— 别这么做 |
@@ -627,7 +639,7 @@ python tools/analyze_issue.py
 | 正文兜底范围 | 回答 / 专栏 / 想法 | 回答 |
 | 压缩编码协商 | 按本机解码能力声明 | 声明 `br` / `zstd`（本机无解码库时正文会乱码） |
 | 失败处理 | 不写占位文件，可无损重跑 | 无对应处理 |
-| 测试 | 136 项离线 pytest + 三版本 CI | `test/` 下 19 个手动脚本 |
+| 测试 | 142 项离线 pytest + 三版本 CI | `test/` 下 19 个手动脚本 |
 | 许可证 | GPL-3.0 | 未声明 |
 | 收藏夹并发 | 线程池 | 串行 + 随机 sleep |
 
@@ -659,11 +671,11 @@ Obsidian / Logseq / Typora. Images are downloaded into `assets/` and rewritten t
 
 Highlights: three content-fetch routes (page → streaming → OpenAPI fallback),
 failed fetches never leave a bogus file behind, layered retries with a global rate limit,
-cross-platform path handling, and 136 offline tests (no network, no cookies required).
+cross-platform path handling, and 142 offline tests (no network, no cookies required).
 
 ```bash
 pip install -r requirements.txt
-cp config_examples.json config.json   # then edit it
+cp config.example.json config.json    # then edit it
 python main.py --dry-run              # verify config
 python main.py                        # export
 ```

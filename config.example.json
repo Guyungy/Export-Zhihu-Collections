@@ -1,0 +1,16 @@
+{
+  "zhihuUrls": [
+    { "name": "技术-效率工具", "url": "https://www.zhihu.com/collection/123456789" },
+    { "name": "赚钱-金融市场", "url": "123456790" }
+  ],
+  "outputPath": "",
+  "os": "",
+  "openCollection": false,
+  "downloadWorkers": 6,
+  "imageWorkers": 4,
+  "requestDelay": 0.4,
+  "pageTimeout": 30,
+  "longPageTimeout": 120,
+  "fetchRetries": 3,
+  "apiFallback": true
+}

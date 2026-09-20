@@ -19,6 +19,12 @@ venv/
 cookies.json
 cookies.local.json
 
+# 个人配置：含你真实的收藏夹清单，仓库里只保留 config.example.json
+# 用精确路径，避免把 config.example.json 一起吞掉
+/config.json
+# 旧版格式（顶层是数组），同样不入库，仅在本地兼容老用法时使用
+/zhihuUrls.json
+
 # 导出产物与日志
 /downloads/
 /logs/

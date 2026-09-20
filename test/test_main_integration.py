@@ -45,6 +45,25 @@ def isolated_env(tmp_path, monkeypatch):
         logging.getLogger().handlers[:] = previous_handlers
 
 
+@pytest.fixture(autouse=True)
+def never_read_real_config(monkeypatch):
+    """这些测试必须自给自足，不能读你本机真实的 ``config.json``。
+
+    仓库里已经不含 ``config.json``（它含个人收藏夹清单，已 gitignore），
+    所以 CI 上读到的是空配置 —— 若用例依赖真实配置，就会「本地绿、CI 红」。
+    需要别的配置时，在用例内部再 patch 一次即可覆盖本夹具。
+    """
+    monkeypatch.setattr(
+        main.config_mod,
+        "load_config",
+        lambda path=None: {
+            "zhihuUrls": [
+                {"name": "技术-效率工具", "url": "https://www.zhihu.com/collection/123450010"}
+            ]
+        },
+    )
+
+
 def _session_for(html_path: str, url: str, images: bool = True) -> FakeSession:
     html = read_fixture(html_path)
 
@@ -84,11 +103,11 @@ class TestHelpers:
 
     def test_select_collections_by_name_and_id(self):
         collections = [
-            {"name": "技术-效率工具", "url": "https://www.zhihu.com/collection/343826248"},
-            {"name": "赚钱-金融市场", "url": "https://www.zhihu.com/collection/630144608"},
+            {"name": "技术-效率工具", "url": "https://www.zhihu.com/collection/123450010"},
+            {"name": "赚钱-金融市场", "url": "https://www.zhihu.com/collection/123450018"},
         ]
         assert len(main._select_collections(collections, [])) == 2
-        assert [c["name"] for c in main._select_collections(collections, ["630144608"])] == ["赚钱-金融市场"]
+        assert [c["name"] for c in main._select_collections(collections, ["123450018"])] == ["赚钱-金融市场"]
         assert [c["name"] for c in main._select_collections(collections, ["技术"])] == ["技术-效率工具"]
         assert main._select_collections(collections, ["不存在的"]) == []
 
@@ -219,7 +238,7 @@ class TestCli:
         monkeypatch.setattr(main, "build_session", lambda cookies=None: FakeSession(handler))
         monkeypatch.setattr(main, "load_cookies", lambda: {"z_c0": "fake"})
 
-        exit_code = main.main(["--output", str(isolated_env), "--list", "--only", "343826248"])
+        exit_code = main.main(["--output", str(isolated_env), "--list", "--only", "123450010"])
         assert exit_code == 0
         output = capsys.readouterr().out
         assert "技术-效率工具" in output

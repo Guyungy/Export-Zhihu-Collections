@@ -21,6 +21,7 @@ from typing import Any, Dict, Optional, Union
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 CONFIG_FILENAME = "config.json"
+EXAMPLE_CONFIG_FILENAME = "config.example.json"
 LEGACY_URLS_FILENAME = "zhihuUrls.json"
 COOKIES_FILENAME = "cookies.json"
 DOWNLOAD_DIRNAME = "downloads"
@@ -124,6 +125,7 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
         if config_path:
             logging.error("未找到指定的配置文件: %s", config_path)
             print("未找到指定的配置文件: %s" % config_path)
+            print("可以复制仓库里的 %s 作为起点" % EXAMPLE_CONFIG_FILENAME)
             return default_config()
     except (json.JSONDecodeError, ValueError) as exc:
         logging.error("配置文件格式错误 %s: %s", path, exc)
@@ -141,6 +143,8 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
         return config
     except FileNotFoundError:
         print("未找到配置文件，请先创建 %s 并配置收藏夹信息" % CONFIG_FILENAME)
+        print("  cp %s %s" % (EXAMPLE_CONFIG_FILENAME, CONFIG_FILENAME))
+        print("（%s 里有可直接改用的字段与默认值）" % EXAMPLE_CONFIG_FILENAME)
         return default_config()
     except json.JSONDecodeError as exc:
         print("旧版 %s 格式错误: %s" % (LEGACY_URLS_FILENAME, exc))
@@ -195,7 +199,7 @@ def resolve_output_path(
         "outputPath": "~/Documents/ZhihuExports"
 
         "outputPath": {
-            "windows": "D:/Documents/Zhihu知乎",
+            "windows": "D:/Documents/ZhihuExports",
             "macos": "~/Documents/ZhihuExports"
         }
 

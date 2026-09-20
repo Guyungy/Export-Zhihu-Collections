@@ -40,21 +40,21 @@ class TestAuthHints:
 
     def test_get_total_on_401_returns_zero(self):
         session = FakeSession(lambda url: FakeResponse(text="ERR_LOGIN_TICKET_EXPIRED", status_code=401))
-        assert get_collection_total(session, "343826248") == 0
+        assert get_collection_total(session, "123450010") == 0
 
     def test_items_on_401_returns_empty(self):
         session = FakeSession(lambda url: FakeResponse(text="ERR_LOGIN_TICKET_EXPIRED", status_code=401))
-        assert fetch_collection_items(session, "343826248") == []
+        assert fetch_collection_items(session, "123450010") == []
 
 
 class TestParseCollectionId:
     @pytest.mark.parametrize(
         "value,expected",
         [
-            ("https://www.zhihu.com/collection/343826248", "343826248"),
-            ("https://www.zhihu.com/collection/343826248?page=2", "343826248"),
-            ("https://www.zhihu.com/collection/343826248/", "343826248"),
-            ("343826248\n", "343826248"),
+            ("https://www.zhihu.com/collection/123450010", "123450010"),
+            ("https://www.zhihu.com/collection/123450010?page=2", "123450010"),
+            ("https://www.zhihu.com/collection/123450010/", "123450010"),
+            ("123450010\n", "123450010"),
         ],
     )
     def test_variants(self, value, expected):
@@ -164,7 +164,7 @@ class TestMinePageParsing:
     def test_primary_selector(self, mine_page_html):
         collections = _parse_mine_page_html(mine_page_html)
         assert [c["name"] for c in collections] == ["技术-效率工具", "赚钱-金融市场"]
-        assert collections[0]["url"] == "https://www.zhihu.com/collection/343826248"
+        assert collections[0]["url"] == "https://www.zhihu.com/collection/123450010"
         assert collections[1]["url"].startswith("https://www.zhihu.com/collection/")
 
     def test_fallback_link_scan_dedupes(self, mine_page_v2_html):

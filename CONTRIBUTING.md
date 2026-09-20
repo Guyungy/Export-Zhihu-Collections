@@ -10,7 +10,7 @@ git clone https://github.com/Guyungy/Export-Zhihu-Collections.git
 cd Export-Zhihu-Collections
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements-dev.txt
-pytest                                               # 应该 136 passed，且不联网
+pytest                                               # 应该 142 passed，且不联网
 ```
 
 测试全部离线：用假会话（`test/helpers.py`）+ 页面样例（`test/fixtures/*.html`）。
@@ -67,6 +67,6 @@ pytest
 
 - `cookies.json`
 - `downloads/`、`logs/`、`debug/` 等导出产物
-- 含个人收藏夹清单的 `config.json`（示例放 `config_examples.json`）
+- 含个人收藏夹清单的 `config.json`（模板放 `config.example.json`）
 
 `.gitignore` 已经覆盖这些，但请自己再确认一次 `git status`。
