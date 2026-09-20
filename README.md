@@ -26,6 +26,7 @@
 - [🧩 项目结构](#-项目结构)
 - [🧪 开发与测试](#-开发与测试)
 - [❓ 常见问题](#-常见问题)
+- [🙏 致谢](#-致谢)
 - [⚠️ 免责声明](#-免责声明)
 
 ---
@@ -36,14 +37,17 @@
 | --- | --- |
 | 📦 **批量导出** | 一次配置多个收藏夹，逐夹归档到独立目录 |
 | 🔐 **公开 + 私密** | 无 cookies 也能导公开收藏夹；带 cookies 可导私密收藏夹 |
+| 🛡️ **API 兜底** | 页面被 403 / 改版挡住时，自动改走知乎 OpenAPI 取正文（回答 / 专栏 / 想法都支持） |
 | 🖼️ **图片本地化** | 正文图片并发下载到 `assets/`，正文改写为 Obsidian 内嵌语法 `![[图片名]]` |
 | 🔁 **断点续传** | 已导出且链接一致的文件自动跳过，重复运行不重复下载 |
 | 🧠 **内容类型感知** | 回答 / 专栏 / 想法都能导出；视频等暂不支持的类型会明确记录并跳过 |
 | 🧩 **多种选择器** | 每类页面准备多套 DOM 选择器 + 智能正文检测，知乎改版也不容易全挂 |
+| 🪄 **懒加载图片还原** | 把 `data-original` 里的真实图片地址提升到 `src`，API 正文的配图不会丢 |
 | 🛡️ **失败隔离** | 单篇文章、单张图片失败都不影响其它内容；失败页面 HTML 自动存到 `debug/` |
 | 🚀 **并发 + 限速** | 多线程下载正文与图片，全局请求间隔可调，降低被风控的概率 |
-| 🔄 **自动重试** | 429 / 5xx / 连接重置自动指数退避重试 |
-| 🪵 **可追溯** | 每次运行都产出 `logs/*.log`（过程）与 `logs/*.json`（逐篇结果） |
+| 🔄 **自动重试** | 429 / 5xx / 连接重置自动指数退避重试；正文抓取再包一层应用层重试 |
+| 🧵 **流式读取** | 专栏长文走流式读取 + 更长的读超时，正文再长也不容易中途断流 |
+| 🪵 **可追溯** | 每次运行都产出 `logs/*.log`（过程）与 `logs/*.json`（逐篇结果，含正文来源） |
 | 💻 **跨平台** | macOS / Windows / Linux / Cygwin 路径都能正确解析，输出目录可按系统分别配置 |
 
 ---
@@ -123,7 +127,11 @@ python main.py                       # 紧接着直接导出
   "openCollection": false,
   "downloadWorkers": 6,
   "imageWorkers": 4,
-  "requestDelay": 0.4
+  "requestDelay": 0.4,
+  "pageTimeout": 30,
+  "longPageTimeout": 120,
+  "fetchRetries": 3,
+  "apiFallback": true
 }
 ```
 
@@ -136,6 +144,10 @@ python main.py                       # 紧接着直接导出
 | `downloadWorkers` | int | `6` | 正文下载并发数（1–16） |
 | `imageWorkers` | int | `4` | 单篇正文内图片并发数（1–16） |
 | `requestDelay` | float | `0.4` | 全局请求最小间隔（秒），越大越安全越慢 |
+| `pageTimeout` | float | `30` | 普通页面请求超时（秒） |
+| `longPageTimeout` | float | `120` | 专栏文章的读超时（秒），长文建议保持较大 |
+| `fetchRetries` | int | `3` | 正文抓取的应用层重试次数（0–10） |
+| `apiFallback` | bool | `true` | 页面抓取失败时是否改走知乎 OpenAPI 取正文 |
 
 ### `outputPath` 的两种写法
 
@@ -175,6 +187,8 @@ python main.py [选项]
 | `--workers N` | 覆盖正文并发数（1–16） |
 | `--delay SEC` | 覆盖全局请求间隔 |
 | `--skip-images` | 只导出文字，图片保留远程链接 |
+| `--no-api-fallback` | 禁用 API 兜底（默认会在页面失败时改走 OpenAPI） |
+| `--retries N` | 覆盖正文抓取的重试次数（0–10） |
 | `--list` | 只列出收藏夹与条目数量，不下载 |
 | `--dry-run` | 每个收藏夹只试抓 1 条，用来验证配置 |
 | `-v, --verbose` | 控制台输出调试级日志 |
@@ -200,7 +214,7 @@ python main.py --list
 
 | 脚本 | 用途 |
 | --- | --- |
-| `tools/analyze_issue.py` | 体检 cookies → 登录接口 → 页面结构 → 试跑抓取 |
+| `tools/analyze_issue.py` | 体检 cookies → 登录接口 → 页面结构 → 试跑抓取 → 正文 API 兜底通道 |
 | `tools/debug_page.py` | 抓下「我的收藏夹」原始 HTML，分析真实 class 名与链接 |
 
 ---
@@ -256,18 +270,22 @@ flowchart LR
     D --> E{"内容类型"}
 
     E -->|回答 / 想法| F["多套选择器解析正文"]
-    E -->|专栏| G["Post-RichText 解析"]
+    E -->|专栏| G["流式读取 + 长超时<br/>Post-RichText 解析"]
     E -->|视频等| H["记录原因并跳过"]
 
-    F --> I["DOM 清理<br/>去 style / 占位图 / 卡片链接"]
-    G --> I
+    F --> Q{"拿到正文？"}
+    G --> Q
+    Q -->|"403 / 改版 / 解析不出"| R["知乎 OpenAPI 兜底<br/>answers / articles / pins"]
+    R --> I
+    Q -->|是| I["DOM 清理<br/>提升 data-original 图片<br/>去 style / 占位图 / 卡片"]
+
     I --> J["图片并发预取到 assets/"]
     J --> K["HTML → Markdown<br/>Obsidian 内嵌图片语法"]
     K --> L["写入 .md<br/>首行引用原文链接"]
 
     L --> M["logs/*.log 过程日志"]
-    L --> N["logs/*.json 逐篇结果"]
-    E -.失败.-> O["debug/*.html 原始页面"]
+    L --> N["logs/*.json 逐篇结果<br/>含正文来源 page / api"]
+    Q -.失败.-> O["debug/*.html 原始页面"]
 ```
 
 一次 `python main.py` 的完整流程：
@@ -277,8 +295,19 @@ flowchart LR
 3. 建立带重试的会话，加载 cookies，设置请求间隔
 4. 逐个收藏夹：分页取条目 → 按类型解析标题和链接
 5. 过滤出未下载的文章 → 线程池并发下载正文
-6. 每篇正文：解析 DOM → 清理 → 并发预取图片 → 转 Markdown → 写文件
-7. 汇总：收藏夹数、文章数、新下载 / 跳过 / 失败，写明输出目录与日志路径
+6. 每篇正文：页面路线（含重试）→ 失败则 API 兜底 → 解析 DOM → 清理 → 并发预取图片 → 转 Markdown → 写文件
+7. 汇总：收藏夹数、文章数、新下载 / 跳过 / 失败，以及 API 兜底篇数与重试次数
+
+### 三条正文获取路线
+
+| 路线 | 触发条件 | 说明 |
+| --- | --- | --- |
+| **页面解析** | 默认 | 直接请求网页，多套选择器 + 智能检测定位正文 |
+| **流式读取** | 专栏文章 | 长正文按块读取，读超时单独放宽到 `longPageTimeout` |
+| **OpenAPI 兜底** | 页面 403 / 404 / 结构改版 | 调 `/api/v4/{answers,articles,pins}/{id}` 取正文 HTML |
+
+API 兜底返回的是**正文片段**而不是整页，所以不受页面改版影响，也不需要再猜选择器。
+每篇的正文来源会记在 `logs/*.json` 的 `source` 字段里（`page` / `api`），便于事后核对。
 
 ---
 
@@ -292,9 +321,10 @@ Export-Zhihu-Collections/
 ├── utils.py                   # 文件名清理与按字节截断
 ├── zhihu_export/              # 内部实现包
 │   ├── config.py              #   配置加载、校验、跨平台路径解析
-│   ├── http.py                #   会话、请求头、cookies、重试、限流
+│   ├── http.py                #   会话、浏览器请求头、cookies、重试、限流
 │   ├── collections.py         #   收藏夹清单与条目抓取、类型解析
-│   ├── converter.py           #   HTML → Markdown、图片下载器
+│   ├── api.py                 #   正文 API 兜底（answers / articles / pins）
+│   ├── converter.py           #   HTML → Markdown、图片下载器、懒加载图片还原
 │   └── logging_utils.py       #   日志初始化与强制刷新
 ├── tools/                     # 诊断脚本
 ├── test/                      # pytest 测试（离线可跑）
@@ -312,7 +342,7 @@ Export-Zhihu-Collections/
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                      # 80 项测试，全部离线，无需 cookies、不联网
+pytest                      # 134 项测试，全部离线，无需 cookies、不联网
 ```
 
 | 测试文件 | 覆盖范围 |
@@ -321,6 +351,7 @@ pytest                      # 80 项测试，全部离线，无需 cookies、不
 | `test/test_utils.py` | 文件名清理、非法字符、按字节截断 |
 | `test/test_collections.py` | 收藏夹 ID 解析、条目类型解析、分页、401 提示、页面改版兜底 |
 | `test/test_converter.py` | 图片下载 / 缓存 / 命名冲突 / 失败降级、链接卡片、mailto、脚注回链 |
+| `test/test_api.py` | API 兜底的 URL 解析、分块拼装、错误翻译、403 回退、流式读取、图片懒加载还原 |
 | `test/test_main_integration.py` | 端到端：整夹导出、重复运行跳过、失败不写占位文件、`--list` / `--skip-images` |
 
 `test/legacy/` 里是历史调试阶段留下的自检脚本（按源码文本做模式匹配的那批），**不参与 pytest 收集**，仅作记录留存。
@@ -349,6 +380,38 @@ PY
 </details>
 
 <details>
+<summary><b>页面老是返回 403，API 兜底什么时候生效？</b></summary>
+
+页面请求返回 403（或 404、结构改版解析不出正文）时，程序会自动改用知乎 OpenAPI 拿同一篇正文：
+
+| 内容类型 | 接口 |
+| --- | --- |
+| 回答 | `https://www.zhihu.com/api/v4/answers/{id}?include=content` |
+| 专栏 | `https://www.zhihu.com/api/v4/articles/{id}?include=content` |
+| 想法 | `https://www.zhihu.com/api/v4/pins/{id}` |
+
+拿回来的是**正文片段**，因此不受页面改版影响。想临时关掉用 `--no-api-fallback`，
+或把配置里的 `apiFallback` 设为 `false`。
+
+> [!NOTE]
+> 兜底接口同样需要有效登录态。如果日志里出现
+> 「登录票据已失效」「接口要求登录（need_login）」，或者
+> 「被知乎风控拦截（code 10003）」，说明 cookies 已过期 —— 重新导出即可。
+> 这些提示都是把知乎的机器码翻译过来的，不是网络问题。
+
+想看每条到底走的是哪条路线，翻 `logs/*.json` 里的 `source` 字段（`page` 或 `api`）。
+</details>
+
+<details>
+<summary><b>导出的 Markdown 里图片变成了远程链接 <code>![alt](https://...)</code>？</b></summary>
+
+说明那张图的下载失败了（网络抖动、图床 403、`assets/` 不可写等）。失败不会影响整篇导出，
+正文照常落地，只是该图降级成远程链接，同时计入日志里的 `image_failures`。
+
+重跑一次通常就能补上；也可以删掉对应 `.md` 强制重下（图片本身有跨文章缓存，命中就直接复用）。
+</details>
+
+<details>
 <summary><b>提示 401 / <code>ERR_LOGIN_TICKET_EXPIRED</code>，或者一个收藏夹都抓不到？</b></summary>
 
 cookies 过期了。重新按 [准备 cookies](#-准备-cookies) 导出，然后先跑一次体检：
@@ -357,7 +420,7 @@ cookies 过期了。重新按 [准备 cookies](#-准备-cookies) 导出，然后
 python tools/analyze_issue.py
 ```
 
-它会依次检查 cookies 完整性、登录接口、页面结构，并试跑一次抓取。
+它会依次检查 cookies 完整性、登录接口、页面结构、试跑一次抓取，并探测正文 API 兜底通道。
 </details>
 
 <details>
@@ -396,6 +459,16 @@ python tools/analyze_issue.py
 
 回答、专栏、想法会导出为 Markdown；视频等纯多媒体内容暂不支持，程序会打印跳过原因并写入日志。
 </details>
+
+---
+
+## 🙏 致谢
+
+- 正文 API 兜底、专栏流式读取这两条思路来自
+  [JasonJarvan/Zhihu-Collections-MCP](https://github.com/JasonJarvan/Zhihu-Collections-MCP)（本项目的一个衍生分支）。
+  本仓库在其思路上重写并补齐了：`pins`（想法）支持、错误体翻译、懒加载图片还原、API 调用纳入统一限流，
+  以及配套的离线测试。**未引入其 MCP Server 部分。**
+- 早期的多线程改造与 README 改进来自社区 PR（[@sabahmax-dev](https://github.com/sabahmax-dev) 等）。
 
 ---
 

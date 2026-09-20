@@ -33,6 +33,11 @@ DEFAULT_IMAGE_WORKERS = 4
 MAX_IMAGE_WORKERS = 16
 DEFAULT_REQUEST_DELAY = 0.4  # 每个正文请求之间的最小间隔（秒）
 MAX_REQUEST_DELAY = 10.0
+DEFAULT_PAGE_TIMEOUT = 30.0  # 普通页面超时（秒）
+DEFAULT_LONG_PAGE_TIMEOUT = 120.0  # 大专栏文章的读超时（秒）
+MAX_PAGE_TIMEOUT = 600.0
+DEFAULT_FETCH_RETRIES = 3  # 正文抓取的应用层重试次数
+MAX_FETCH_RETRIES = 10
 
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
@@ -287,6 +292,47 @@ def get_request_delay(config: Dict[str, Any]) -> float:
         0.0,
         MAX_REQUEST_DELAY,
     )
+
+
+def get_page_timeout(config: Dict[str, Any]) -> float:
+    """获取普通页面请求超时（秒）。"""
+    return _bounded_float(
+        config.get("pageTimeout", DEFAULT_PAGE_TIMEOUT),
+        DEFAULT_PAGE_TIMEOUT,
+        1.0,
+        MAX_PAGE_TIMEOUT,
+    )
+
+
+def get_long_page_timeout(config: Dict[str, Any]) -> float:
+    """获取大专栏文章的读超时（秒）。
+
+    专栏文章正文动辄上万字，配套的图片也多，用普通超时很容易中途断流。
+    """
+    return _bounded_float(
+        config.get("longPageTimeout", DEFAULT_LONG_PAGE_TIMEOUT),
+        DEFAULT_LONG_PAGE_TIMEOUT,
+        1.0,
+        MAX_PAGE_TIMEOUT,
+    )
+
+
+def get_fetch_retries(config: Dict[str, Any]) -> int:
+    """获取正文抓取的应用层重试次数。"""
+    return _bounded_int(
+        config.get("fetchRetries", DEFAULT_FETCH_RETRIES),
+        DEFAULT_FETCH_RETRIES,
+        0,
+        MAX_FETCH_RETRIES,
+    )
+
+
+def is_api_fallback_enabled(config: Dict[str, Any]) -> bool:
+    """是否允许在页面抓取失败时回退到 OpenAPI（默认开启）。"""
+    value = config.get("apiFallback", True)
+    if isinstance(value, str):
+        return value.strip().lower() not in ("0", "false", "no", "off")
+    return bool(value)
 
 
 def get_search_paths(config: Dict[str, Any]) -> tuple:

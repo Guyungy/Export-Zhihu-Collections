@@ -27,17 +27,73 @@ except ImportError:  # pragma: no cover - 兼容极老版本 urllib3
 
 from . import config as config_mod
 
-# 保持与历史版本一致的 UA：这是实测能稳定拿到知乎页面的组合，不要随意替换
+# 旧版本用的是 Chrome/61（2017 年的 UA），知乎会据此判定为陈旧客户端并更容易返回 403。
+# 这里换成近期版本，并补齐 sec-ch-ua / Sec-Fetch-* 等现代浏览器必带字段。
+BROWSER_MAJOR_VERSION = "147"
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/61.0.3163.100 Safari/537.36"
+    "(KHTML, like Gecko) Chrome/%s.0.0.0 Safari/537.36" % BROWSER_MAJOR_VERSION
 )
+SEC_CH_UA = '"Microsoft Edge";v="%s", "Not.A/Brand";v="8", "Chromium";v="%s"' % (
+    BROWSER_MAJOR_VERSION,
+    BROWSER_MAJOR_VERSION,
+)
+
+#: 浏览器会声明 ``br`` / ``zstd``，但 requests 只在装了对应解码库时才能解压。
+#: 盲目声明会拿到一堆乱码（比拿到 403 更难排查），所以按实际能力协商。
+def supported_content_encodings() -> str:
+    """返回当前环境真正能解压的 Accept-Encoding 列表。"""
+    encodings = ["gzip", "deflate"]
+    for module in ("brotli", "brotlicffi"):
+        try:
+            __import__(module)
+            encodings.append("br")
+            break
+        except ImportError:
+            continue
+    try:
+        __import__("zstandard")
+        encodings.append("zstd")
+    except ImportError:
+        pass
+    return ", ".join(encodings)
+
 
 DEFAULT_HEADERS: Dict[str, str] = {
     "User-Agent": USER_AGENT,
     "Connection": "keep-alive",
-    "Accept": "text/html,application/json,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "zh-CN,zh;q=0.8",
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,image/apng,*/*;q=0.8,"
+        "application/signed-exchange;v=b3;q=0.7"
+    ),
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6,zh-TW;q=0.5",
+    "Accept-Encoding": supported_content_encodings(),
+    "Referer": "https://www.zhihu.com/",
+    "sec-ch-ua": SEC_CH_UA,
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "same-site",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+}
+
+#: 走 OpenAPI 拿正文时用得上的头。知乎对 XHR 与文档请求的风控策略不同。
+API_HEADERS: Dict[str, str] = {
+    "User-Agent": USER_AGENT,
+    "Accept": "*/*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Accept-Encoding": DEFAULT_HEADERS["Accept-Encoding"],
+    "Referer": "https://www.zhihu.com/",
+    "x-requested-with": "fetch",
+    "sec-ch-ua": SEC_CH_UA,
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
 }
 
 RETRY_STATUS_CODES = (429, 500, 502, 503, 504)
@@ -49,6 +105,14 @@ IMPORTANT_COOKIES = ("z_c0", "d_c0", "SESSIONID")
 def build_headers(extra: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
     """返回一份请求头副本，可追加自定义字段。"""
     headers = dict(DEFAULT_HEADERS)
+    if extra:
+        headers.update(extra)
+    return headers
+
+
+def build_api_headers(extra: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
+    """返回一份 OpenAPI 请求头副本（用于正文 API 兜底）。"""
+    headers = dict(API_HEADERS)
     if extra:
         headers.update(extra)
     return headers

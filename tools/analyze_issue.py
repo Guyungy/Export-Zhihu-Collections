@@ -6,7 +6,7 @@
     python tools/analyze_issue.py
 
 当「我的收藏夹」抓不到内容时，用这个脚本快速判断问题出在哪一层：
-cookies 是否有效 → 接口是否可用 → 页面结构是否改版。
+cookies 是否有效 → 接口是否可用 → 页面结构是否改版 → 正文 API 兜底通道是否可用。
 """
 
 from __future__ import annotations
@@ -91,6 +91,54 @@ def check_collections(session) -> None:
         print("✗ 抓取失败: %s" % exc)
 
 
+def check_content_api(session) -> bool:
+    """检查正文 API 兜底通道是否可用。
+
+    页面路线被 403 / 改版挡住时，导出会退到这几个接口取正文。
+    这里逐个探一遍，把机器码翻译成人话。
+    """
+    print("\n=== 5. 检查正文 API 兜底通道 ===")
+    from zhihu_export import api as api_mod
+
+    # 用一组稳定的公开内容做探针
+    probes = (
+        ("回答", "https://www.zhihu.com/question/20482274/answer/15637067"),
+        ("专栏", "https://zhuanlan.zhihu.com/p/386395767"),
+    )
+
+    healthy = 0
+    for label, url in probes:
+        target = api_mod.parse_content_target(url)
+        api_url = api_mod.build_api_url(*target) if target else None
+        if not api_url:
+            print("✗ %s: URL 无法解析出内容 ID" % label)
+            continue
+
+        try:
+            response = session.get(api_url, headers=http_mod.build_api_headers(), timeout=20)
+        except Exception as exc:  # noqa: BLE001
+            print("✗ %s: 请求失败 %s" % (label, exc))
+            continue
+
+        content_type = (response.headers.get("Content-Type") or "").lower()
+        if "json" in content_type:
+            payload = response.json()
+            if api_mod.extract_content_html(payload, target[0]):
+                print("✓ %s: 可取正文" % label)
+                healthy += 1
+            else:
+                print("✗ %s: HTTP %s | %s"
+                      % (label, response.status_code, api_mod.describe_api_error(payload) or "响应体为空"))
+        else:
+            print("✗ %s: HTTP %s 返回非 JSON（可能被风控拦截）" % (label, response.status_code))
+
+    if healthy:
+        print("  说明：页面抓取失败时，这些接口能顶上来")
+    else:
+        print("  说明：兜底通道也不可用 —— 通常还是 cookies 失效，先重新导出 cookies")
+    return healthy > 0
+
+
 def main() -> int:
     print("知乎收藏夹抓取诊断")
     print("=" * 50)
@@ -101,6 +149,7 @@ def main() -> int:
     check_mine_page(session)
     if api_ok or cookie_ok:
         check_collections(session)
+    check_content_api(session)
 
     print("\n=== 结论 ===")
     if api_ok:

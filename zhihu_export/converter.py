@@ -237,15 +237,47 @@ def markdownify(html: str, image_downloader: Optional[ImageDownloader] = None, *
     return ObsidianStyleConverter(image_downloader=image_downloader, **options).convert(html)
 
 
+def promote_lazy_images(content) -> int:
+    """把知乎懒加载图片的真实地址从 ``data-*`` 提升到 ``src``。
+
+    网页端和 API 返回的正文里，图片常常写成
+    ``<img src="data:image/svg+xml;base64,..." data-original="https://picx.zhimg.com/...">``。
+    如果不先提升，后面的「删掉 data: 占位图」会把真正要下载的图一起删掉
+    —— API 兜底路径尤其明显，正文里所有配图都会消失。
+
+    返回被提升的图片数量。
+    """
+    if content is None or not hasattr(content, "find_all"):
+        return 0
+
+    promoted = 0
+    for img in content.find_all("img"):
+        src = (img.get("src") or "").strip()
+        if src and not src.startswith("data:"):
+            continue
+
+        for attr in ("data-original", "data-actualsrc", "data-src", "data-original-src"):
+            real_src = (img.get(attr) or "").strip()
+            if real_src:
+                img["src"] = real_src
+                promoted += 1
+                break
+
+    return promoted
+
+
 def sanitize_content(content) -> None:
     """就地清理正文 DOM，避免脏节点影响转换结果。
 
-    * 去掉 ``<style>`` 与 svg 占位图
+    * 先把懒加载图片的真实地址提升到 ``src``（否则会被下一步误删）
+    * 去掉 ``<style>`` 与仍未解析出地址的 svg 占位图
     * 链接卡片 ``a.LinkCard`` 只保留卡片标题
     * 正文里的邮箱被知乎包成 ``mailto:`` 链接，会破坏 Markdown 转换，降级为纯文本
     """
     if content is None or not hasattr(content, "find_all"):
         return
+
+    promote_lazy_images(content)
 
     for el in content.find_all("style"):
         el.extract()

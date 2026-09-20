@@ -74,7 +74,11 @@
     "openCollection": false,
     "downloadWorkers": 8,
     "imageWorkers": 4,
-    "requestDelay": 1.0
+    "requestDelay": 1.0,
+    "pageTimeout": 30,
+    "longPageTimeout": 120,
+    "fetchRetries": 3,
+    "apiFallback": true
   },
   "auto_detect_example": {
     "zhihuUrls": [

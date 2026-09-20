@@ -19,6 +19,8 @@ import json
 import logging
 import os
 import sys
+import threading
+import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -28,6 +30,7 @@ from bs4 import BeautifulSoup
 from tqdm import tqdm
 
 from utils import filter_title_str
+from zhihu_export import api as api_mod
 from zhihu_export import config as config_mod
 from zhihu_export import http as http_mod
 from zhihu_export import logging_utils
@@ -99,6 +102,30 @@ request_limiter: RateLimiter = RateLimiter(0.0)
 current_collection_name = ""
 processing_log: List[Dict[str, Any]] = []
 debug_log_file: Optional[str] = None
+
+# 本次运行的抓取统计（多线程更新，用锁保护）
+_fetch_stats_lock = threading.Lock()
+fetch_stats: Dict[str, int] = {"api_fallback": 0, "page_retries": 0}
+
+#: 正文来自「解析网页」还是「API 兜底」。多线程下必须用 thread-local，
+#: 否则并发抓取时会把别人的来源记到自己头上。
+_source_local = threading.local()
+
+
+def _mark_content_source(source: str) -> None:
+    _source_local.source = source
+
+
+def _consume_content_source() -> str:
+    """取出并复位当前线程的内容来源标记。"""
+    source = getattr(_source_local, "source", "page")
+    _source_local.source = "page"
+    return source
+
+
+def _bump_fetch_stat(key: str, delta: int = 1) -> None:
+    with _fetch_stats_lock:
+        fetch_stats[key] = fetch_stats.get(key, 0) + delta
 
 
 # ---------------------------------------------------------------------------
@@ -178,13 +205,115 @@ def build_session(cookie_dict: Optional[Dict[str, str]] = None):
 # ---------------------------------------------------------------------------
 
 
-def fetch_page(url: str):
-    """抓取页面，返回 ``(response, soup)``；请求会走全局限流。"""
+#: 这些状态码重试没有意义（不是限流也不是抖动），直接交给 API 兜底
+_NON_RETRYABLE_STATUS = frozenset({400, 401, 403, 404, 410})
+
+
+def _decode_body(raw: bytes, response) -> str:
+    """按响应声明的字符集解码正文。
+
+    ``requests`` 对没有 charset 的 ``text/*`` 会默认 ISO-8859-1，直接照用会把中文
+    变成乱码，所以这里对这种情况强制按 UTF-8 解。
+    """
+    encoding = (response.encoding or "").lower()
+    if not encoding or encoding in ("iso-8859-1", "latin-1"):
+        encoding = "utf-8"
+    try:
+        return raw.decode(encoding, errors="replace")
+    except LookupError:
+        return raw.decode("utf-8", errors="replace")
+
+
+def fetch_page(url: str, stream: bool = False, timeout: Optional[float] = None):
+    """抓取页面，返回 ``(response, soup)``；请求会走全局限流。
+
+    :param stream: 大专栏文章建议开启。流式读取时读超时按「每次读取」计算，
+       而不是整篇正文下载的总时长，长文不容易中途断流。
+    :param timeout: 覆盖默认超时（秒）。
+    """
+    if timeout is None:
+        timeout = config_mod.get_page_timeout(config)
+
     if request_limiter:
         request_limiter.wait()
-    response = session.get(url, timeout=30)
+    response = session.get(url, timeout=timeout, stream=stream)
+
+    if stream:
+        chunks: List[bytes] = []
+        for chunk in response.iter_content(chunk_size=8192):
+            if chunk:
+                chunks.append(chunk)
+        html_text = _decode_body(b"".join(chunks), response)
+        response._content = html_text.encode("utf-8", errors="replace")  # noqa: SLF001
+        response.encoding = "utf-8"
+    else:
+        html_text = response.text
+
     response.raise_for_status()
-    return response, BeautifulSoup(response.text, "lxml")
+    return response, BeautifulSoup(html_text, "lxml")
+
+
+def _should_retry(exc: Exception) -> bool:
+    """判断这个异常值不值得重试。"""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    return status not in _NON_RETRYABLE_STATUS
+
+
+def fetch_page_with_retries(
+    url: str,
+    stream: bool = False,
+    timeout: Optional[float] = None,
+    label: str = "页面",
+):
+    """带应用层重试的 :func:`fetch_page`。
+
+    网络层的重试由 ``urllib3.Retry`` 负责，但它管不到「流式读取过程中连接断开」
+    这类情况，所以正文抓取再包一层应用层重试。
+    """
+    attempts = max(1, config_mod.get_fetch_retries(config))
+    last_exc: Optional[Exception] = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            return fetch_page(url, stream=stream, timeout=timeout)
+        except Exception as exc:  # noqa: BLE001 - 重试耗尽后原样抛出
+            last_exc = exc
+            if attempt >= attempts or not _should_retry(exc):
+                break
+            wait = 2.0 * attempt
+            _bump_fetch_stat("page_retries")
+            logging.warning(
+                "%s抓取失败（第 %d/%d 次）: %s，%.0f 秒后重试", label, attempt, attempts, exc, wait
+            )
+            time.sleep(wait)
+
+    assert last_exc is not None
+    raise last_exc
+
+
+def _wrap_api_content(html: str) -> str:
+    """把 API 返回的正文片段清洗后包成完整 HTML。"""
+    soup = BeautifulSoup(html, "lxml")
+    sanitize_content(soup)
+
+    body = soup.body
+    fragment = "".join(str(child) for child in body.children) if body is not None else str(soup)
+    return html_template(fragment)
+
+
+def _try_api_fallback(url: str) -> Optional[str]:
+    """页面路线失败后尝试 API 兜底，成功则返回包装好的 HTML。"""
+    if not config_mod.is_api_fallback_enabled(config):
+        logging.debug("API 兜底已被配置关闭: %s", url)
+        return None
+
+    html = api_mod.fetch_content_via_api(session, url, request_limiter)
+    if not html:
+        return None
+
+    _bump_fetch_stat("api_fallback")
+    _mark_content_source("api")
+    return _wrap_api_content(html)
 
 
 def smart_content_detection(soup, url):
@@ -290,11 +419,16 @@ def _find_container(soup, primary_selectors, fallback_css, url):
 
 
 def get_single_answer_content(answer_url: str):
-    """抓取回答（或想法）正文，返回 HTML 字符串；失败返回 ``FETCH_FAILED``。"""
+    """抓取回答（或想法）正文，返回 HTML 字符串；失败返回 ``FETCH_FAILED``。
+
+    路线：页面 → 找容器；页面被 403 / 改版挡住时 → 改走 OpenAPI 取正文。
+    """
     logging.debug("开始获取回答内容: %s", answer_url)
 
+    answer_content = None
+
     try:
-        response, soup = fetch_page(answer_url)
+        response, soup = fetch_page_with_retries(answer_url, label="回答")
         answer_content = _find_container(
             soup, ANSWER_CONTAINER_SELECTORS, ANSWER_FALLBACK_CSS, answer_url
         )
@@ -303,24 +437,39 @@ def get_single_answer_content(answer_url: str):
             reason = analyze_page_error(soup, response, answer_url)
             logging.error("未找到回答内容容器: %s - %s", answer_url, reason)
             _save_debug_html(response, "answer", answer_url)
-            return FETCH_FAILED
-
-        sanitize_content(answer_content)
     except Exception as exc:  # noqa: BLE001 - 单篇失败不影响整体
         logging.error("获取回答内容时发生错误: %s", exc)
         logging.error("URL: %s", answer_url)
         logging.debug("Traceback: %s", traceback.format_exc())
+
+    if answer_content is None:
+        fallback = _try_api_fallback(answer_url)
+        if fallback:
+            logging.info("回答正文已通过 API 兜底获取: %s", answer_url)
+            return fallback
+        logging.warning("回答正文获取失败（页面与 API 兜底都没拿到）: %s", answer_url)
         return FETCH_FAILED
 
+    sanitize_content(answer_content)
     return html_template(answer_content)
 
 
 def get_single_post_content(paper_url: str):
-    """抓取专栏文章正文，返回 HTML 字符串；失败返回 ``FETCH_FAILED``。"""
+    """抓取专栏文章正文，返回 HTML 字符串；失败返回 ``FETCH_FAILED``。
+
+    专栏文章普遍偏长，走流式读取 + 更长的读超时，避免大正文中途断流。
+    """
     logging.debug("开始获取专栏文章内容: %s", paper_url)
 
+    post_content = None
+
     try:
-        response, soup = fetch_page(paper_url)
+        response, soup = fetch_page_with_retries(
+            paper_url,
+            stream=True,
+            timeout=config_mod.get_long_page_timeout(config),
+            label="专栏文章",
+        )
         post_content = _find_container(
             soup, POST_CONTAINER_SELECTORS, POST_FALLBACK_CSS, paper_url
         )
@@ -329,15 +478,20 @@ def get_single_post_content(paper_url: str):
             reason = analyze_page_error(soup, response, paper_url)
             logging.error("未找到专栏内容容器: %s - %s", paper_url, reason)
             _save_debug_html(response, "post", paper_url)
-            return FETCH_FAILED
-
-        sanitize_content(post_content)
     except Exception as exc:  # noqa: BLE001
         logging.error("获取专栏文章内容时发生错误: %s", exc)
         logging.error("URL: %s", paper_url)
         logging.debug("Traceback: %s", traceback.format_exc())
+
+    if post_content is None:
+        fallback = _try_api_fallback(paper_url)
+        if fallback:
+            logging.info("专栏正文已通过 API 兜底获取: %s", paper_url)
+            return fallback
+        logging.warning("专栏正文获取失败（页面与 API 兜底都没拿到）: %s", paper_url)
         return FETCH_FAILED
 
+    sanitize_content(post_content)
     return html_template(post_content)
 
 
@@ -425,7 +579,9 @@ def download_single_article(task: Dict[str, Any]) -> Dict[str, Any]:
         "url": url,
         "type": task.get("type", ""),
         "status": "",
+        "source": "page",
     }
+    _mark_content_source("page")
 
     if is_article_already_downloaded(file_path, url):
         article_log["status"] = "文章已存在,跳过下载"
@@ -438,6 +594,8 @@ def download_single_article(task: Dict[str, Any]) -> Dict[str, Any]:
             content = get_single_post_content(url)
         else:
             content = get_single_answer_content(url)
+
+        article_log["source"] = _consume_content_source()
 
         if content == FETCH_FAILED:
             article_log["status"] = "文章下载失败, 原因:获取内容失败"
@@ -601,6 +759,9 @@ def print_summary() -> None:
     print("收藏夹  : %d 个" % stats["collections"])
     print("文章    : 共 %d 篇 | 新下载 %d | 跳过 %d | 失败 %d"
           % (stats["total"], stats["downloaded"], stats["skipped"], stats["failed"]))
+    if fetch_stats.get("api_fallback") or fetch_stats.get("page_retries"):
+        print("抓取    : API 兜底 %d 篇 | 页面重试 %d 次"
+              % (fetch_stats.get("api_fallback", 0), fetch_stats.get("page_retries", 0)))
     print("输出目录: %s" % base)
     if debug_log_file:
         print("日志    : %s" % debug_log_file)
@@ -625,6 +786,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workers", type=int, help="正文下载并发数（1-16）")
     parser.add_argument("--delay", type=float, help="每次请求之间的最小间隔秒数")
     parser.add_argument("--skip-images", action="store_true", help="只导出文字，不下载正文图片")
+    parser.add_argument("--no-api-fallback", action="store_true",
+                        help="禁用 API 兜底（默认页面被 403/改版时会改走知乎 OpenAPI 取正文）")
+    parser.add_argument("--retries", type=int, help="正文抓取的应用层重试次数（0-10）")
     parser.add_argument("--list", action="store_true", help="只列出收藏夹与条目，不下载")
     parser.add_argument("--dry-run", action="store_true", help="每个收藏夹只试抓 1 条，用于验证配置")
     parser.add_argument("-v", "--verbose", action="store_true", help="输出调试级日志")
@@ -650,9 +814,11 @@ def _select_collections(collections: Sequence[Dict[str, Any]], only: Sequence[st
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """程序入口，返回进程退出码。"""
-    global config, base_output_path, cookies, session, request_limiter, processing_log
+    global config, base_output_path, cookies, session, request_limiter, processing_log, fetch_stats
 
     args = build_arg_parser().parse_args(argv)
+
+    fetch_stats = {"api_fallback": 0, "page_retries": 0}
 
     # 1) 配置
     config = config_mod.load_config(args.config)
@@ -662,6 +828,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         config["requestDelay"] = args.delay
     if args.skip_images:
         config["skipImages"] = True
+    if args.no_api_fallback:
+        config["apiFallback"] = False
+    if args.retries is not None:
+        config["fetchRetries"] = args.retries
 
     # 2) 输出路径
     base_output_path = config_mod.resolve_output_path(config, override=args.output)
