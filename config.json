@@ -34,7 +34,13 @@
     { "name": "生涯-职业前途", "url": "https://www.zhihu.com/collection/948760934" },
     { "name": "娱乐-游戏", "url": "https://www.zhihu.com/collection/355540979" }
   ],
-  "outputPath": "D:/Documents/号主仓库禁删/Zhihu知乎",
-  "os": "windows",
-  "openCollection": false
+  "outputPath": {
+    "windows": "D:/Documents/号主仓库禁删/Zhihu知乎",
+    "macos": "~/Documents/ZhihuExports"
+  },
+  "os": "",
+  "openCollection": false,
+  "downloadWorkers": 6,
+  "imageWorkers": 4,
+  "requestDelay": 0.4
 }

@@ -1,936 +1,430 @@
-# -*- coding:utf-8 -*-
-import os
-import random
-import sys
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import requests
-from bs4 import BeautifulSoup
-import re
-from tqdm import tqdm
-from datetime import datetime
-from utils import filter_title_str
+# -*- coding: utf-8 -*-
+"""Export-Zhihu-Collections 主入口：把知乎收藏夹导出为本地 Markdown。
+
+用法::
+
+    python main.py                      # 按 config.json 导出全部收藏夹
+    python main.py --list               # 只列出收藏夹与条目数量
+    python main.py --only 技术-效率工具  # 只导出指定收藏夹（可重复）
+    python main.py --output ~/Zhihu     # 覆盖输出目录
+    python main.py --workers 8 --delay 1.0
+
+导入本模块不会再产生任何副作用（旧版本会在 import 时创建目录、读取 cookies）。
+"""
+
+from __future__ import annotations
+
+import argparse
 import json
 import logging
+import os
+import sys
 import traceback
-import platform
-import pathlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Sequence
 
-from markdownify import MarkdownConverter
+from bs4 import BeautifulSoup
+from tqdm import tqdm
 
+from utils import filter_title_str
+from zhihu_export import config as config_mod
+from zhihu_export import http as http_mod
+from zhihu_export import logging_utils
+from zhihu_export.collections import (
+    fetch_collection_items,
+    get_collection_total,
+    parse_collection_id,
+)
+from zhihu_export.converter import (
+    ImageDownloader,
+    ObsidianStyleConverter,
+    html_template,
+    markdownify,
+    prefetch_content_images,
+    sanitize_content,
+)
+from zhihu_export.http import RateLimiter
 
-# 读取配置文件
-def load_config():
-    try:
-        with open('config.json', 'r', encoding='utf-8') as f:
-            config = json.load(f)
-            return config
-    except FileNotFoundError:
-        print("未找到config.json文件，尝试读取旧版zhihuUrls.json文件")
-        try:
-            with open('zhihuUrls.json', 'r', encoding='utf-8') as f:
-                urls = json.load(f)
-                return {"zhihuUrls": urls, "outputPath": "", "os": ""}
-        except FileNotFoundError:
-            print("未找到配置文件，请创建config.json文件并配置收藏夹信息")
-            return {"zhihuUrls": [], "outputPath": "", "os": ""}
+#: 正文抓取失败时的返回值（沿用历史约定）
+FETCH_FAILED = -1
 
-# 获取当前操作系统类型
-def get_current_os():
-    system = platform.system().lower()
-    if system == "windows":
-        return "windows"
-    elif system == "darwin":
-        return "macos"
-    elif system == "linux":
-        return "linux"
-    else:
-        return "unknown"
+ANSWER_CONTAINER_SELECTORS = (
+    ("div", {"class": "AnswerCard"}),
+    ("div", {"class": "QuestionAnswer-content"}),
+    ("div", {"class": "RichContent"}),
+    ("div", {"class": "ContentItem-expandButton"}),
+)
 
-# 解析路径，根据操作系统类型处理
-def parse_output_path(path_str, os_type):
-    if not path_str:
-        return None
-    
-    # 如果没有指定os，则自动检测
-    if not os_type:
-        os_type = get_current_os()
-    
-    try:
-        if os_type.lower() == "windows":
-            # Windows路径处理
-            # 支持 D:\path\to\folder 或 D:/path/to/folder 格式
-            path_str = path_str.replace('/', '\\')
-            return pathlib.Path(path_str).resolve()
-        elif os_type.lower() in ["linux", "freebsd", "openbsd", "netbsd", "solaris", "aix"]:
-            # Unix-like系统路径处理
-            # 支持 /usr/local/lib 格式
-            if path_str.startswith('~'):
-                path_str = os.path.expanduser(path_str)
-            return pathlib.Path(path_str).resolve()
-        elif os_type.lower() in ["macos", "darwin"]:
-            # macOS路径处理
-            # 支持 /Users/username/Documents 或 ~/Documents 格式
-            if path_str.startswith('~'):
-                path_str = os.path.expanduser(path_str)
-            return pathlib.Path(path_str).resolve()
-        elif os_type.lower() in ["cygwin", "msys"]:
-            # Cygwin/MSYS环境路径处理
-            # 支持 /cygdrive/c/path 或 /c/path 格式
-            if path_str.startswith('/cygdrive/'):
-                # Cygwin格式: /cygdrive/c/path -> C:\path
-                drive_path = path_str[10:]  # 移除 /cygdrive/
-                if len(drive_path) >= 2 and drive_path[1] == '/':
-                    path_str = drive_path[0].upper() + ':' + drive_path[1:].replace('/', '\\')
-            elif path_str.startswith('/') and len(path_str) >= 3 and path_str[2] == '/':
-                # MSYS格式: /c/path -> C:\path
-                path_str = path_str[1].upper() + ':' + path_str[2:].replace('/', '\\')
-            return pathlib.Path(path_str).resolve()
-        else:
-            # 其他系统，尝试通用处理
-            logging.warning(f"未知操作系统类型: {os_type}，尝试通用路径处理")
-            if path_str.startswith('~'):
-                path_str = os.path.expanduser(path_str)
-            return pathlib.Path(path_str).resolve()
-    except Exception as e:
-        logging.error(f"路径解析失败: {path_str}, 错误: {str(e)}")
-        return None
+ANSWER_FALLBACK_CSS = (
+    ".RichContent-inner",
+    "div.RichText",
+    "div.Post-RichText",
+    "div.ContentItem-content",
+    ".QuestionAnswer .RichContent",
+)
 
-# 读取cookies
-def load_cookies():
-    try:
-        with open('cookies.json', 'r', encoding='utf-8') as f:
-            cookies_list = json.load(f)
-        cookies_dict = {}
-        expired_cookie_names = []
-        now_timestamp = time.time()
-        for cookie in cookies_list:
-            cookies_dict[cookie['name']] = cookie['value']
-            expiration_date = cookie.get('expirationDate')
-            if expiration_date and expiration_date < now_timestamp:
-                expired_cookie_names.append(cookie['name'])
+POST_CONTAINER_SELECTORS = (
+    ("div", {"class": "Post-RichText"}),
+    ("div", {"class": "RichContent"}),
+    ("div", {"class": "RichContent-inner"}),
+    ("div", {"class": "Post-content"}),
+    ("div", {"class": "Post-RichTextContainer"}),
+    ("div", {"class": "ztext"}),
+    ("div", {"class": "Post-Main"}),
+    ("div", {"class": "Article-RichText"}),
+)
 
-        if expired_cookie_names:
-            unique_names = sorted(set(expired_cookie_names))
-            logging.warning(f"检测到已过期的 cookies: {', '.join(unique_names)}")
-            print(f"警告：检测到已过期的 cookies: {', '.join(unique_names)}，请重新导出最新知乎 cookies。")
-        return cookies_dict
-    except FileNotFoundError:
-        print("未找到cookies.json文件，将使用无登录模式访问（部分内容可能无法获取）")
-        return {}
+POST_FALLBACK_CSS = (
+    "div.RichText",
+    "div.Post-content",
+    "div.ContentItem-content",
+    ".Post .RichContent",
+    ".Post-RichTextContainer",
+    ".ztext",
+    ".Post-Main .RichContent",
+    "[data-zop-editor]",
+    ".Article-RichText",
+)
 
-# 全局变量存储当前处理的收藏夹名称
-current_collection_name = ""
+# ---------------------------------------------------------------------------
+# 运行时状态（沿用全局变量，保持与旧脚本的兼容）
+# ---------------------------------------------------------------------------
 
-# 全局日志数据存储
-processing_log = []
-
-# 全局配置和路径管理
-config = {}
+config: Dict[str, Any] = {}
 base_output_path = None
+cookies: Dict[str, str] = {}
+session = None
+request_limiter: RateLimiter = RateLimiter(0.0)
+current_collection_name = ""
+processing_log: List[Dict[str, Any]] = []
+debug_log_file: Optional[str] = None
 
-DEFAULT_DOWNLOAD_WORKERS = 6
-MAX_DOWNLOAD_WORKERS = 16
 
-# 设置调试日志
-def setup_debug_logging():
-    # 初始化时使用默认路径，稍后会在main中重新配置
-    logs_dir = os.path.join(os.path.dirname(__file__), 'downloads', 'logs')
-    if not os.path.exists(logs_dir):
-        os.makedirs(logs_dir)
-    
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    debug_log_file = os.path.join(logs_dir, f"debug_{timestamp}.log")
-    
-    # 清除所有已存在的处理器
-    root_logger = logging.getLogger()
-    for handler in root_logger.handlers[:]:
-        root_logger.removeHandler(handler)
-    
-    # 创建文件处理器，立即写入
-    file_handler = logging.FileHandler(debug_log_file, encoding='utf-8', mode='w')
-    file_handler.setLevel(logging.DEBUG)
-    
-    # 创建控制台处理器
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    
-    # 设置格式
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    file_handler.setFormatter(formatter)
-    console_handler.setFormatter(formatter)
-    
-    # 配置根日志记录器
-    root_logger.setLevel(logging.DEBUG)
-    root_logger.addHandler(file_handler)
-    root_logger.addHandler(console_handler)
-    
-    # 测试日志写入
-    logging.info(f"日志系统初始化完成，日志文件: {debug_log_file}")
-    
-    # 强制刷新
-    for handler in root_logger.handlers:
-        if hasattr(handler, 'flush'):
-            handler.flush()
-    
+# ---------------------------------------------------------------------------
+# 配置与路径（薄封装，保持旧函数名可用）
+# ---------------------------------------------------------------------------
+
+
+def load_config():
+    """加载配置文件（兼容旧调用方式）。"""
+    return config_mod.load_config()
+
+
+def get_current_os() -> str:
+    """返回当前操作系统标识。"""
+    return config_mod.get_current_os()
+
+
+def parse_output_path(path_str, os_type=None):
+    """把配置里的输出路径解析为绝对路径。"""
+    return config_mod.parse_output_path(path_str, os_type)
+
+
+def load_cookies():
+    """读取 cookies.json。"""
+    return http_mod.load_cookies()
+
+
+def get_output_path(collection_name: str) -> str:
+    """返回某个收藏夹的输出目录；未配置自定义目录时使用 ``downloads/<收藏夹名>``。"""
+    base, _, _ = config_mod.get_search_paths({"_base_output_path": base_output_path})
+    return str(base / filter_title_str(collection_name))
+
+
+def get_logs_path() -> str:
+    """返回日志目录。"""
+    _, logs_dir, _ = config_mod.get_search_paths({"_base_output_path": base_output_path})
+    return str(logs_dir)
+
+
+def get_debug_path() -> str:
+    """返回调试文件目录。"""
+    _, _, debug_dir = config_mod.get_search_paths({"_base_output_path": base_output_path})
+    return str(debug_dir)
+
+
+def get_download_workers() -> int:
+    """正文下载并发数（命令行参数优先于配置文件）。"""
+    return config_mod.get_download_workers(config)
+
+
+def get_image_workers() -> int:
+    """单篇正文内的图片并发数。"""
+    return config_mod.get_image_workers(config)
+
+
+def reconfigure_logging(prefix: str = "debug", console_level: int = logging.INFO) -> str:
+    """把日志切到最终确定的日志目录。"""
+    global debug_log_file
+    debug_log_file = logging_utils.setup_logging(
+        get_logs_path(), prefix=prefix, console_level=console_level
+    )
     return debug_log_file
 
-# 重新配置日志路径
-def reconfigure_logging():
-    logs_dir = get_logs_path()
-    if not os.path.exists(logs_dir):
-        os.makedirs(logs_dir)
-    
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    debug_log_file = os.path.join(logs_dir, f"debug_{timestamp}.log")
-    
-    # 清除已有的handler
-    root_logger = logging.getLogger()
-    for handler in root_logger.handlers[:]:
-        handler.flush()  # 确保刷新
-        root_logger.removeHandler(handler)
-    
-    # 创建新的处理器
-    file_handler = logging.FileHandler(debug_log_file, encoding='utf-8')
-    file_handler.setLevel(logging.DEBUG)
-    
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    
-    # 设置格式
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    file_handler.setFormatter(formatter)
-    console_handler.setFormatter(formatter)
-    
-    # 重新添加处理器
-    root_logger.addHandler(file_handler)
-    root_logger.addHandler(console_handler)
-    root_logger.setLevel(logging.DEBUG)
-    
-    return debug_log_file
 
-# 获取输出路径的函数
-def get_output_path(collection_name):
-    """
-    根据配置获取输出路径
-    如果配置了outputPath，使用自定义路径
-    否则使用默认的downloads路径
-    """
-    global base_output_path
-    
-    if base_output_path:
-        # 使用自定义输出路径
-        return os.path.join(str(base_output_path), collection_name)
-    else:
-        # 使用默认路径
-        return os.path.join(os.path.dirname(__file__), 'downloads', collection_name)
+# 兼容旧名字：早期版本分为「先初始化再重配」两步，现在一步到位
+setup_debug_logging = reconfigure_logging
+flush_logs = logging_utils.flush_logs
 
-def get_logs_path():
-    """
-    获取日志路径
-    """
-    global base_output_path
-    
-    if base_output_path:
-        # 使用自定义输出路径
-        return os.path.join(str(base_output_path), 'logs')
-    else:
-        # 使用默认路径
-        return os.path.join(os.path.dirname(__file__), 'downloads', 'logs')
 
-def get_debug_path():
-    """
-    获取调试文件路径
-    """
-    global base_output_path
-    
-    if base_output_path:
-        # 使用自定义输出路径
-        return os.path.join(str(base_output_path), 'debug')
-    else:
-        # 使用默认路径
-        return os.path.join(os.path.dirname(__file__), 'downloads', 'debug')
+def build_session(cookie_dict: Optional[Dict[str, str]] = None):
+    """创建带自动重试的会话。"""
+    return http_mod.create_session(cookies=cookie_dict if cookie_dict is not None else cookies)
+
+
+# ---------------------------------------------------------------------------
+# 页面抓取
+# ---------------------------------------------------------------------------
+
+
+def fetch_page(url: str):
+    """抓取页面，返回 ``(response, soup)``；请求会走全局限流。"""
+    if request_limiter:
+        request_limiter.wait()
+    response = session.get(url, timeout=30)
+    response.raise_for_status()
+    return response, BeautifulSoup(response.text, "lxml")
+
 
 def smart_content_detection(soup, url):
+    """标准选择器全部失效时的兜底内容检测。
+
+    依次尝试：文本量最大的容器 → ``article``/``main`` → 多段落容器。
     """
-    智能内容检测 - 当标准选择器失败时的备用方案
-    """
-    logging.debug(f"开始智能内容检测: {url}")
-    
-    # 策略1: 查找包含大量文本的div元素
-    all_divs = soup.find_all('div')
-    text_length_threshold = 200  # 最少文本长度
-    
+    logging.debug("开始智能内容检测: %s", url)
+
+    all_divs = soup.find_all("div")
+    text_length_threshold = 200
+
     candidates = []
     for div in all_divs:
         text_content = div.get_text(strip=True)
         if len(text_content) > text_length_threshold:
-            # 计算直接子节点中的文本密度
-            direct_text_length = len(''.join(div.find_all(text=True, recursive=False)))
-            total_length = len(text_content)
-            
-            # 过滤掉主要是链接或导航的容器
-            link_count = len(div.find_all('a'))
-            text_to_link_ratio = total_length / max(link_count, 1)
-            
-            candidates.append({
-                'element': div,
-                'text_length': total_length,
-                'text_to_link_ratio': text_to_link_ratio,
-                'classes': div.get('class', [])
-            })
-    
-    # 按文本长度排序，选择最长的
-    candidates.sort(key=lambda x: x['text_length'], reverse=True)
-    
-    if candidates:
-        best_candidate = candidates[0]
-        logging.debug(f"智能检测找到候选内容，长度: {best_candidate['text_length']}, classes: {best_candidate['classes']}")
-        
-        # 如果最佳候选者文本长度足够长，返回它
-        if best_candidate['text_length'] > 500:
-            return best_candidate['element']
-    
-    # 策略2: 查找文章相关的容器
-    article_containers = soup.find_all(['article', 'main'])
-    for container in article_containers:
-        text_content = container.get_text(strip=True)
-        if len(text_content) > text_length_threshold:
-            logging.debug(f"找到文章容器: {container.name}")
+            link_count = len(div.find_all("a"))
+            candidates.append(
+                {
+                    "element": div,
+                    "text_length": len(text_content),
+                    "text_to_link_ratio": len(text_content) / max(link_count, 1),
+                    "classes": div.get("class", []),
+                }
+            )
+
+    candidates.sort(key=lambda x: x["text_length"], reverse=True)
+    if candidates and candidates[0]["text_length"] > 500:
+        best = candidates[0]
+        logging.debug("智能检测命中容器，长度: %s, classes: %s", best["text_length"], best["classes"])
+        return best["element"]
+
+    for container in soup.find_all(["article", "main"]):
+        if len(container.get_text(strip=True)) > text_length_threshold:
+            logging.debug("智能检测命中文章容器: %s", container.name)
             return container
-    
-    # 策略3: 查找包含多个段落的容器
+
     for div in all_divs:
-        paragraphs = div.find_all('p')
-        if len(paragraphs) >= 3:  # 至少3个段落
-            total_p_text = sum(len(p.get_text(strip=True)) for p in paragraphs)
-            if total_p_text > text_length_threshold:
-                logging.debug(f"找到多段落容器，段落数: {len(paragraphs)}")
+        paragraphs = div.find_all("p")
+        if len(paragraphs) >= 3:
+            total = sum(len(p.get_text(strip=True)) for p in paragraphs)
+            if total > text_length_threshold:
+                logging.debug("智能检测命中多段落容器，段落数: %s", len(paragraphs))
                 return div
-    
+
     logging.debug("智能内容检测未找到合适的内容")
     return None
 
-def analyze_page_error(soup, response, url):
-    """
-    分析页面错误类型，区分404、登录要求、解析失败等
-    """
+
+def analyze_page_error(soup, response, url: str) -> str:
+    """分析页面为什么解析不出正文（404 / 需要登录 / 被删除 / 改版）。"""
     page_text = response.text.lower()
-    
-    # 检查404错误
-    if '404' in page_text or 'not found' in page_text or '页面不存在' in page_text:
+
+    if "404" in page_text or "not found" in page_text or "页面不存在" in response.text:
         return "该文章链接被404, 无法直接访问"
-    
-    # 检查登录要求
-    if '登录' in response.text or 'login' in page_text or '请先登录' in response.text:
-        return "该文章需要登录访问，请检查cookies配置"
-    
-    # 检查访问权限
-    if '403' in page_text or 'forbidden' in page_text or '访问被拒绝' in response.text:
+    if "请先登录" in response.text or "登录" in response.text or "login" in page_text:
+        return "该文章需要登录访问，请检查 cookies 配置"
+    if "403" in page_text or "forbidden" in page_text or "访问被拒绝" in response.text:
         return "该文章访问被拒绝，可能需要特殊权限"
-    
-    # 检查内容是否被删除
-    if '已删除' in response.text or '内容不存在' in response.text or 'deleted' in page_text:
+    if "已删除" in response.text or "内容不存在" in response.text or "deleted" in page_text:
         return "该文章内容已被删除或不存在"
-    
-    # 检查是否有重定向
     if response.url != url:
-        return f"页面被重定向到: {response.url}, 可能是登录页面或错误页面"
-    
-    # 检查页面是否包含正常的知乎页面结构
-    zhihu_indicators = ['知乎', 'zhihu', 'www.zhihu.com']
-    has_zhihu_structure = any(indicator in page_text for indicator in zhihu_indicators)
-    
-    if not has_zhihu_structure:
+        return "页面被重定向到: %s, 可能是登录页或错误页" % response.url
+    if not any(indicator in page_text for indicator in ("知乎", "zhihu", "www.zhihu.com")):
         return "页面结构异常，可能不是正常的知乎页面"
-    
-    # 如果页面看起来正常但找不到内容，可能是页面结构变化
     return "页面结构可能发生变化，无法解析文章内容"
 
-debug_log_file = setup_debug_logging()
 
-cookies = load_cookies()
-
-headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/61.0.3163.100 Safari/537.36",
-    "Connection": "keep-alive",
-    "Accept": "text/html,application/json,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "zh-CN,zh;q=0.8"
-}
-
-class ObsidianStyleConverter(MarkdownConverter):
-    """
-    Create a custom MarkdownConverter that adds two newlines after an image
-    """
-
-    def chomp(self, text):
-        """
-        If the text in an inline tag like b, a, or em contains a leading or trailing
-        space, strip the string and return a space as suffix of prefix, if needed.
-        This function is used to prevent conversions like
-            <b> foo</b> => ** foo**
-        """
-        prefix = ' ' if text and text[0] == ' ' else ''
-        suffix = ' ' if text and text[-1] == ' ' else ''
-        text = text.strip()
-        return (prefix, suffix, text)
-
-    def convert_img(self, *args, **kwargs):
-        logging.debug(f"convert_img called with args: {args}, kwargs={kwargs}")
-        try:
-            # 提取参数，适配不同的调用方式
-            if len(args) >= 2:
-                el, text = args[0], args[1]
-            else:
-                el = kwargs.get('el')
-                text = kwargs.get('text', '')
-            
-            alt = el.attrs.get('alt', None) or ''
-            src = el.attrs.get('src', None) or ''
-
-            # 使用全局变量获取当前收藏夹名称
-            global current_collection_name
-            downloadDir = get_output_path(current_collection_name)
-            if not os.path.exists(downloadDir):
-                os.makedirs(downloadDir)
-            assetsDir = os.path.join(downloadDir,'assets')
-            if not os.path.exists(assetsDir):
-                os.makedirs(assetsDir)
-
-            img_content = requests.get(url=src, headers=headers, cookies=cookies).content
-            img_content_name = src.split('?')[0].split('/')[-1]
-
-            imgPath = os.path.join(assetsDir,img_content_name)
-            with open(imgPath, 'wb') as fp:
-                fp.write(img_content)
-
-            result = '![[%s]]\n(%s)\n\n' % (img_content_name, alt)
-            logging.debug(f"convert_img returning: {result}")
-            return result
-        except Exception as e:
-            logging.error(f"convert_img error: {str(e)}")
-            logging.error(f"Traceback: {traceback.format_exc()}")
-            raise
-
-    def convert_a(self, *args, **kwargs):
-        logging.debug(f"convert_a called with args: {args}, kwargs={kwargs}")
-        try:
-            # 提取参数，适配不同的调用方式
-            if len(args) >= 2:
-                el, text = args[0], args[1]
-                convert_as_inline = args[2] if len(args) > 2 else None
-            else:
-                el = kwargs.get('el')
-                text = kwargs.get('text', '')
-                convert_as_inline = kwargs.get('convert_as_inline')
-            
-            prefix, suffix, text = self.chomp(text)
-            if not text:
-                return ''
-            href = el.get('href')
-            # title = el.get('title')
-
-            if el.get('aria-labelledby') and el.get('aria-labelledby').find('ref') > -1:
-                text = text.replace('[', '[^')
-                result = '%s' % text
-                logging.debug(f"convert_a returning (aria-labelledby): {result}")
-                return result
-            if (el.attrs and 'data-reference-link' in el.attrs) or ('class' in el.attrs and ('ReferenceList-backLink' in el.attrs['class'])):
-                text = '[^{}]: '.format(href[5])
-                result = '%s' % text
-                logging.debug(f"convert_a returning (reference-link): {result}")
-                return result
-
-            # 调用父类方法，适配不同的参数组合
-            try:
-                if convert_as_inline is not None:
-                    result = super(ObsidianStyleConverter, self).convert_a(el, text, convert_as_inline, **kwargs)
-                else:
-                    result = super(ObsidianStyleConverter, self).convert_a(el, text, **kwargs)
-            except TypeError:
-                # 如果参数不匹配，尝试不同的调用方式
-                try:
-                    result = super(ObsidianStyleConverter, self).convert_a(*args, **kwargs)
-                except TypeError:
-                    result = super(ObsidianStyleConverter, self).convert_a(el, text)
-            
-            logging.debug(f"convert_a returning (super): {result}")
-            return result
-        except Exception as e:
-            logging.error(f"convert_a error: {str(e)}")
-            logging.error(f"Traceback: {traceback.format_exc()}")
-            raise
-
-    def convert_li(self, *args, **kwargs):
-        logging.debug(f"convert_li called with args: {args}, kwargs={kwargs}")
-        try:
-            # 提取参数，适配不同的调用方式
-            if len(args) >= 2:
-                el, text = args[0], args[1]
-                convert_as_inline = args[2] if len(args) > 2 else None
-            else:
-                el = kwargs.get('el')
-                text = kwargs.get('text', '')
-                convert_as_inline = kwargs.get('convert_as_inline')
-            
-            if el and el.find('a', {'aria-label': 'back'}) is not None:
-                result = '%s\n' % ((text or '').strip())
-                logging.debug(f"convert_li returning (aria-label back): {result}")
-                return result
-
-            # 调用父类方法，适配不同的参数组合
-            try:
-                if convert_as_inline is not None:
-                    result = super(ObsidianStyleConverter, self).convert_li(el, text, convert_as_inline, **kwargs)
-                else:
-                    result = super(ObsidianStyleConverter, self).convert_li(el, text, **kwargs)
-            except TypeError:
-                # 如果参数不匹配，尝试不同的调用方式
-                try:
-                    result = super(ObsidianStyleConverter, self).convert_li(*args, **kwargs)
-                except TypeError:
-                    result = super(ObsidianStyleConverter, self).convert_li(el, text)
-            
-            logging.debug(f"convert_li returning (super): {result}")
-            return result
-        except Exception as e:
-            logging.error(f"convert_li error: {str(e)}")
-            logging.error(f"Traceback: {traceback.format_exc()}")
-            raise
-
-def markdownify(html, **options):
-    return ObsidianStyleConverter(**options).convert(html)
+def _save_debug_html(response, prefix: str, url: str) -> None:
+    """把无法解析的页面落盘，方便排查。"""
+    debug_dir = get_debug_path()
+    os.makedirs(debug_dir, exist_ok=True)
+    debug_file = os.path.join(debug_dir, "debug_%s_%s.html" % (prefix, url.split("/")[-1]))
+    with open(debug_file, "w", encoding="utf-8") as f:
+        f.write(response.text)
+    logging.debug("页面 HTML 已保存到: %s", debug_file)
 
 
-# 获取收藏夹的回答总数
-def get_article_nums_of_collection(collection_id):
-    """
-    :param starturl: 收藏夹连接
-    :return: 收藏夹的页数
-    """
+def _find_container(soup, primary_selectors, fallback_css, url):
+    """按「指定选择器 → CSS 兜底 → 智能检测」的顺序找正文容器。"""
+    for tag, attrs in primary_selectors:
+        elements = soup.find_all(tag, attrs)
+        if elements:
+            logging.debug("找到 %d 个 %s %s 元素", len(elements), tag, attrs)
+            for element in elements:
+                inner = element.find("div", class_="RichContent-inner")
+                if inner:
+                    logging.debug("命中 RichContent-inner")
+                    return inner
+            logging.debug("直接使用 %s 容器", attrs.get("class"))
+            return elements[0]
+
+    for selector in fallback_css:
+        node = soup.select_one(selector)
+        if node:
+            logging.debug("使用备用选择器命中内容: %s", selector)
+            return node
+
+    node = smart_content_detection(soup, url)
+    if node is not None:
+        logging.debug("使用智能内容检测命中内容")
+    return node
+
+
+def get_single_answer_content(answer_url: str):
+    """抓取回答（或想法）正文，返回 HTML 字符串；失败返回 ``FETCH_FAILED``。"""
+    logging.debug("开始获取回答内容: %s", answer_url)
+
     try:
-        collection_url = "https://www.zhihu.com/api/v4/collections/{}/items".format(collection_id)
-        html = requests.get(collection_url, headers=headers, cookies=cookies)
-        html.raise_for_status()
+        response, soup = fetch_page(answer_url)
+        answer_content = _find_container(
+            soup, ANSWER_CONTAINER_SELECTORS, ANSWER_FALLBACK_CSS, answer_url
+        )
 
-        # 页面总数
-        result = html.json()['paging'].get('totals')
-        logging.info(f"收藏夹 {collection_id} 包含 {result} 个项目")
-        return result
-    except Exception as e:
-        logging.error(f"获取收藏夹 {collection_id} 总数失败: {str(e)}")
-        return 0
+        if answer_content is None:
+            reason = analyze_page_error(soup, response, answer_url)
+            logging.error("未找到回答内容容器: %s - %s", answer_url, reason)
+            _save_debug_html(response, "answer", answer_url)
+            return FETCH_FAILED
 
+        sanitize_content(answer_content)
+    except Exception as exc:  # noqa: BLE001 - 单篇失败不影响整体
+        logging.error("获取回答内容时发生错误: %s", exc)
+        logging.error("URL: %s", answer_url)
+        logging.debug("Traceback: %s", traceback.format_exc())
+        return FETCH_FAILED
 
-# 解析出每个回答的具体链接
-def get_article_urls_in_collection(collection_id):
-    collection_id = collection_id.replace('\n','')
-    logging.info(f"开始获取收藏夹 {collection_id} 的文章列表")
-
-    offset = 0
-    limit = 20
-
-    article_nums = get_article_nums_of_collection(collection_id)
-    
-    if article_nums is None or article_nums == 0:
-        logging.warning(f"收藏夹 {collection_id} 没有文章或获取失败")
-        return [], []
-
-    url_list = []
-    title_list = []
-    while offset < article_nums:
-        collection_url = "https://www.zhihu.com/api/v4/collections/{}/items?offset={}&limit={}".format(collection_id,
-                                                                                                       offset, limit)
-        try:
-            logging.info(f"请求收藏夹API: offset={offset}, limit={limit}")
-            html = requests.get(collection_url, headers=headers, cookies=cookies)
-            html.raise_for_status()
-            content = html.json()
-            logging.info(f"成功获取 {len(content.get('data', []))} 个项目")
-        except Exception as e:
-            logging.error(f"请求收藏夹API失败: {str(e)}")
-            # 返回已获取的内容而不是None
-            return url_list, title_list
-
-        for el in content.get('data', []):
-            try:
-                url_list.append(el['content']['url'])
-                if el['content']['type'] == 'answer':
-                    title_list.append(el['content']['question']['title'])
-                else:
-                    title_list.append(el['content']['title'])
-                logging.debug(f"添加文章: {el['content'].get('title', '未知标题')}")
-            except Exception as e:
-                logging.warning(f"解析文章项目失败: {str(e)}")
-                print('********')
-                print('TBD 非回答, 非专栏, 想法类收藏暂时无法处理')
-                for k, v in el['content'].items():
-                    if k in ['type', 'url']:
-                        print(k, v)
-                print('********')
-                # 如果已经添加了URL，需要移除对应的URL
-                if len(url_list) > len(title_list):
-                    url_list.pop()
-
-        offset += limit
-
-    logging.info(f"收藏夹 {collection_id} 总共获取到 {len(url_list)} 个有效文章")
-    return url_list, title_list
+    return html_template(answer_content)
 
 
-# 获得单条答案的数据
-def get_single_answer_content(answer_url):
-    logging.debug(f"开始获取回答内容: {answer_url}")
-    flush_logs()
-    
+def get_single_post_content(paper_url: str):
+    """抓取专栏文章正文，返回 HTML 字符串；失败返回 ``FETCH_FAILED``。"""
+    logging.debug("开始获取专栏文章内容: %s", paper_url)
+
     try:
-        # 发送请求
-        html_content = requests.get(answer_url, headers=headers, cookies=cookies)
-        html_content.raise_for_status()
-        logging.debug(f"HTTP请求成功，状态码: {html_content.status_code}")
-        
-        soup = BeautifulSoup(html_content.text, "lxml")
-        
-        # 尝试多种可能的选择器
-        answer_content = None
-        selectors = [
-            ('div', {'class': "AnswerCard"}),
-            ('div', {'class': "QuestionAnswer-content"}),
-            ('div', {'class': "RichContent"}),
-            ('div', {'class': "ContentItem-expandButton"}),
-        ]
-        
-        for tag, attrs in selectors:
-            elements = soup.find_all(tag, attrs)
-            if elements:
-                logging.debug(f"找到{len(elements)}个 {tag} {attrs} 元素")
-                for element in elements:
-                    inner = element.find("div", class_="RichContent-inner")
-                    if inner:
-                        answer_content = inner
-                        logging.debug("成功找到RichContent-inner元素")
-                        break
-                if answer_content:
-                    break
-        
-        # 如果还没找到，尝试直接查找RichContent-inner
-        if not answer_content:
-            answer_content = soup.find("div", class_="RichContent-inner")
-            if answer_content:
-                logging.debug("直接找到RichContent-inner元素")
-        
-        # 如果仍未找到，尝试其他可能的内容容器
-        if not answer_content:
-            fallback_selectors = [
-                "div.RichText",
-                "div.Post-RichText", 
-                "div.ContentItem-content",
-                ".QuestionAnswer .RichContent",
-            ]
-            
-            for selector in fallback_selectors:
-                answer_content = soup.select_one(selector)
-                if answer_content:
-                    logging.debug(f"使用备用选择器找到内容: {selector}")
-                    break
-        
-        if not answer_content:
-            logging.error(f"未找到回答内容容器: {answer_url}")
-            # 保存页面HTML以供调试
-            debug_dir = get_debug_path()
-            os.makedirs(debug_dir, exist_ok=True)
-            debug_file = os.path.join(debug_dir, f"debug_answer_{answer_url.split('/')[-1]}.html")
-            with open(debug_file, 'w', encoding='utf-8') as f:
-                f.write(html_content.text)
-            logging.debug(f"页面HTML已保存到: {debug_file}")
-            flush_logs()
-            return -1
-        
-        # 去除不必要的style标签
-        for el in answer_content.find_all('style'):
-            el.extract()
-            
-    except Exception as e:
-        logging.error(f"获取回答内容时发生错误: {str(e)}")
-        logging.error(f"URL: {answer_url}")
-        flush_logs()
-        return -1
+        response, soup = fetch_page(paper_url)
+        post_content = _find_container(
+            soup, POST_CONTAINER_SELECTORS, POST_FALLBACK_CSS, paper_url
+        )
 
-    for el in answer_content.select('img[src*="data:image/svg+xml"]'):
-        el.extract()
-    
-    for el in answer_content.find_all('a'): # 处理回答中的卡片链接
-        aclass = el.get('class')
-        if isinstance(aclass, list):
-            if aclass[0] == 'LinkCard':
-                linkcard_name = el.get('data-text')
-                el.string = linkcard_name if linkcard_name is not None else el.get('href')
-        else:
-            pass
-        try:
-            if el.get('href').startswith('mailto'): # 特殊bug, 正文的aaa@bbb.ccc会被识别为邮箱, 嵌入<a href='mailto:xxx'>中, markdown转换时会报错
-                el.name = 'p'
-        except:
-            print(answer_url, el) # 一些广告卡片, 不需要处理
-        
-    # 添加html外层标签
-    answer_content = html_template(answer_content)
+        if post_content is None:
+            reason = analyze_page_error(soup, response, paper_url)
+            logging.error("未找到专栏内容容器: %s - %s", paper_url, reason)
+            _save_debug_html(response, "post", paper_url)
+            return FETCH_FAILED
 
-    return answer_content
+        sanitize_content(post_content)
+    except Exception as exc:  # noqa: BLE001
+        logging.error("获取专栏文章内容时发生错误: %s", exc)
+        logging.error("URL: %s", paper_url)
+        logging.debug("Traceback: %s", traceback.format_exc())
+        return FETCH_FAILED
+
+    return html_template(post_content)
 
 
-# 获取单条专栏文章的内容
-def get_single_post_content(paper_url):
-    logging.debug(f"开始获取专栏文章内容: {paper_url}")
-    flush_logs()
-    
-    try:
-        # 发送请求
-        html_content = requests.get(paper_url, headers=headers, cookies=cookies)
-        html_content.raise_for_status()
-        logging.debug(f"HTTP请求成功，状态码: {html_content.status_code}")
-        
-        soup = BeautifulSoup(html_content.text, "lxml")
-        
-        # 尝试多种可能的选择器
-        post_content = None
-        selectors = [
-            ('div', {'class': "Post-RichText"}),
-            ('div', {'class': "RichContent"}),
-            ('div', {'class': "RichContent-inner"}),
-            ('div', {'class': "Post-content"}),
-            ('div', {'class': "Post-RichTextContainer"}),
-            ('div', {'class': "ztext"}),
-            ('div', {'class': "Post-Main"}),
-            ('div', {'class': "Article-RichText"}),
-        ]
-        
-        for tag, attrs in selectors:
-            post_content = soup.find(tag, attrs)
-            if post_content:
-                logging.debug(f"找到专栏内容: {tag} {attrs}")
-                break
-        
-        # 如果还没找到，尝试CSS选择器
-        if not post_content:
-            fallback_selectors = [
-                "div.RichText",
-                "div.Post-content", 
-                "div.ContentItem-content",
-                ".Post .RichContent",
-                ".Post-RichTextContainer",
-                ".ztext",
-                ".Post-Main .RichContent",
-                "[data-zop-editor]",
-                ".Article-RichText",
-            ]
-            
-            for selector in fallback_selectors:
-                post_content = soup.select_one(selector)
-                if post_content:
-                    logging.debug(f"使用备用选择器找到内容: {selector}")
-                    break
-        
-        # 如果仍然没找到，尝试智能内容检测
-        if not post_content:
-            post_content = smart_content_detection(soup, paper_url)
-            if post_content:
-                logging.debug("使用智能内容检测找到内容")
-        
-        if not post_content:
-            # 检查是否是真正的404或其他错误
-            error_message = analyze_page_error(soup, html_content, paper_url)
-            
-            logging.error(f"未找到专栏内容容器: {paper_url} - {error_message}")
-            # 保存页面HTML以供调试
-            debug_dir = get_debug_path()
-            os.makedirs(debug_dir, exist_ok=True)
-            debug_file = os.path.join(debug_dir, f"debug_post_{paper_url.split('/')[-1]}.html")
-            with open(debug_file, 'w', encoding='utf-8') as f:
-                f.write(html_content.text)
-            logging.debug(f"页面HTML已保存到: {debug_file}")
-            flush_logs()
-            post_content = error_message
-        
-        if post_content and hasattr(post_content, 'find_all'):
-            # 去除不必要的style标签
-            for el in post_content.find_all('style'):
-                el.extract()
-
-            for el in post_content.select('img[src*="data:image/svg+xml"]'):
-                el.extract()
-            
-            for el in post_content.find_all('a'): # 处理专栏文章中的卡片链接
-                aclass = el.get('class')
-                if isinstance(aclass, list):
-                    if aclass[0] == 'LinkCard':
-                        linkcard_name = el.get('data-text')
-                        el.string = linkcard_name if linkcard_name is not None else el.get('href')
-                else:
-                    pass
-                try:
-                    if el.get('href').startswith('mailto'): # 特殊bug, 正文的aaa@bbb.ccc会被识别为邮箱, 嵌入<a href='mailto:xxx'>中, markdown转换时会报错
-                        el.name = 'p'
-                except:
-                    logging.warning(f"处理链接时出现问题: {paper_url}, {el}")
-        
-    except Exception as e:
-        logging.error(f"获取专栏文章内容时发生错误: {str(e)}")
-        logging.error(f"URL: {paper_url}")
-        flush_logs()
-        post_content = "该文章链接获取失败"
-
-    # 添加html外层标签
-    post_content = html_template(post_content)
-
-    return post_content
+# ---------------------------------------------------------------------------
+# 落盘
+# ---------------------------------------------------------------------------
 
 
-def html_template(data):
-    # api content
-    html = '''
-        <html>
-        <head>
-        </head>
-        <body>
-        %s
-        </body>
-        </html>
-        ''' % data
-    return html
-
-
-def is_article_already_downloaded(file_path, target_url):
-    """
-    检查文件是否已存在且包含相同的URL
-    :param file_path: 要检查的markdown文件路径
-    :param target_url: 目标URL
-    :return: True如果文件存在且URL匹配，False否则
-    """
+def is_article_already_downloaded(file_path: str, target_url: str) -> bool:
+    """文件已存在、非空、且首行引用块里的 URL 与目标一致，视为已下载。"""
     if not os.path.exists(file_path):
         return False
-    
+    if os.path.getsize(file_path) == 0:  # 上次中断留下的空文件，重下
+        return False
+
     try:
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(file_path, "r", encoding="utf-8") as f:
             first_line = f.readline().strip()
-            # 检查第一行是否为引用块且包含目标URL
-            if first_line.startswith('> ') and target_url in first_line:
-                return True
-    except:
-        pass
-    
-    return False
+        return first_line.startswith("> ") and target_url in first_line
+    except OSError:
+        return False
 
 
-def get_unique_filename(base_dir, title, url):
-    """
-    获取唯一的文件名，如果标题重复则添加URL的ID部分
-    :param base_dir: 基础目录
-    :param title: 文章标题
-    :param url: 文章URL
-    :return: 唯一的文件路径
-    """
+def get_unique_filename(base_dir: str, title: str, url: str) -> str:
+    """返回不冲突的文件路径；同名文章会带上 URL 尾部 ID。"""
     base_filename = filter_title_str(title)
     file_path = os.path.join(base_dir, base_filename + ".md")
-    
-    # 如果文件不存在，直接返回
+
     if not os.path.exists(file_path):
         return file_path
-    
-    # 如果文件存在且URL匹配，返回该路径（用于跳过）
     if is_article_already_downloaded(file_path, url):
         return file_path
-    
-    # 如果文件存在但URL不匹配，添加URL ID后缀
-    url_id = url.split('/')[-1]
-    unique_filename = f"{base_filename}_{url_id}"
-    return os.path.join(base_dir, unique_filename + ".md")
+
+    url_id = url.split("/")[-1]
+    return os.path.join(base_dir, "%s_%s.md" % (base_filename, url_id))
 
 
-
-
-def save_processing_log():
-    """
-    保存处理日志到logs目录
-    """
-    logs_dir = get_logs_path()
-    if not os.path.exists(logs_dir):
-        os.makedirs(logs_dir)
-    
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_filename = f"{timestamp}.json"
-    log_path = os.path.join(logs_dir, log_filename)
-    
-    with open(log_path, 'w', encoding='utf-8') as f:
-        json.dump(processing_log, f, ensure_ascii=False, indent=2)
-    
-    print(f"处理日志已保存到: {log_path}")
-
-
-
-def flush_logs():
-    """强制刷新所有日志处理器"""
-    import sys
-    root_logger = logging.getLogger()
-    
-    for handler in root_logger.handlers:
-        try:
-            if hasattr(handler, 'flush'):
-                handler.flush()
-            # 如果是文件处理器，强制同步
-            if hasattr(handler, 'stream') and hasattr(handler.stream, 'flush'):
-                handler.stream.flush()
-                # 强制操作系统刷新
-                if hasattr(handler.stream, 'fileno'):
-                    try:
-                        os.fsync(handler.stream.fileno())
-                    except:
-                        pass
-        except:
-            pass
-    
-    # 强制刷新标准输出
-    sys.stdout.flush()
-    sys.stderr.flush()
-
-def get_download_workers():
-    """获取正文下载并发数"""
-    raw_workers = config.get('downloadWorkers', DEFAULT_DOWNLOAD_WORKERS)
-    try:
-        worker_count = int(raw_workers)
-    except (TypeError, ValueError):
-        worker_count = DEFAULT_DOWNLOAD_WORKERS
-
-    worker_count = max(1, min(worker_count, MAX_DOWNLOAD_WORKERS))
-    return worker_count
-
-def build_reserved_file_path(base_dir, title, url, reserved_paths):
-    """
-    为当前任务预留唯一文件名，避免并发下载时重复标题发生文件名冲突
-    """
+def build_reserved_file_path(base_dir: str, title: str, url: str, reserved_paths: set) -> str:
+    """在并发下载前为任务占位，避免同标题不同文章写进同一个文件。"""
     file_path = get_unique_filename(base_dir, title, url)
     candidate_path = file_path
 
     while candidate_path in reserved_paths:
         base_name, ext = os.path.splitext(file_path)
-        duplicate_suffix = url.split('/')[-1]
-        candidate_path = f"{base_name}_{duplicate_suffix}{ext}"
+        duplicate_suffix = url.split("/")[-1]
+        candidate_path = "%s_%s%s" % (base_name, duplicate_suffix, ext)
         if candidate_path in reserved_paths:
-            candidate_path = f"{base_name}_{duplicate_suffix}_{len(reserved_paths)}{ext}"
+            candidate_path = "%s_%s_%s%s" % (base_name, duplicate_suffix, len(reserved_paths), ext)
 
     reserved_paths.add(candidate_path)
     return candidate_path
 
-def download_single_article(task):
-    """下载单篇文章，供线程池调用"""
+
+def save_processing_log() -> str:
+    """把本次处理的逐篇结果写成 JSON 日志。"""
+    logs_dir = get_logs_path()
+    os.makedirs(logs_dir, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = os.path.join(logs_dir, "%s.json" % timestamp)
+
+    with open(log_path, "w", encoding="utf-8") as f:
+        json.dump(processing_log, f, ensure_ascii=False, indent=2)
+
+    print("处理日志已保存到: %s" % log_path)
+    return log_path
+
+
+# ---------------------------------------------------------------------------
+# 下载
+# ---------------------------------------------------------------------------
+
+
+def download_single_article(task: Dict[str, Any]) -> Dict[str, Any]:
+    """下载单篇文章（线程池任务）。
+
+    :param task: ``{title, url, type, file_path, assets_dir, image_workers}``
+    """
     title = task["title"]
     url = task["url"]
     file_path = task["file_path"]
 
-    article_log = {
+    article_log: Dict[str, Any] = {
         "name": title,
         "url": url,
-        "status": ""
+        "type": task.get("type", ""),
+        "status": "",
     }
 
     if is_article_already_downloaded(file_path, url):
@@ -938,200 +432,308 @@ def download_single_article(task):
         return article_log
 
     try:
-        logging.info(f"开始下载文章: {title}")
-        flush_logs()
+        logging.info("开始下载文章: %s", title)
 
-        if 'zhuanlan' in url:
+        if "zhuanlan" in url:
             content = get_single_post_content(url)
         else:
             content = get_single_answer_content(url)
 
-        if content == -1:
+        if content == FETCH_FAILED:
             article_log["status"] = "文章下载失败, 原因:获取内容失败"
-            logging.warning(f"获取内容失败: {url}")
-            flush_logs()
+            logging.warning("获取内容失败: %s", url)
             return article_log
 
-        md = markdownify(content, heading_style="ATX")
-        md = '> %s\n' % url + md
+        downloader = task.get("image_downloader")
+        if downloader is not None:
+            # 先把图片并发拉下来，转换阶段直接命中缓存
+            soup = BeautifulSoup(content, "lxml")
+            prefetch_content_images(soup, downloader)
+            content = str(soup)
 
-        with open(file_path, "w", encoding='utf-8') as md_file:
+        converter = ObsidianStyleConverter(image_downloader=downloader)
+        md = converter.convert(content)
+        md = "> %s\n" % url + md
+
+        with open(file_path, "w", encoding="utf-8") as md_file:
             md_file.write(md)
 
-        article_log["status"] = "文章不存在,正常下载"
-        logging.info(f"文章下载成功: {title}")
-        flush_logs()
+        article_log["images"] = converter.stats["images"]
+        article_log["image_failures"] = converter.stats["image_failures"]
+        article_log["status"] = "正常下载"
+        logging.info("文章下载成功: %s", title)
         return article_log
-    except Exception as e:
-        article_log["status"] = f"文章下载失败, 原因:{str(e)}"
-        logging.error(f"下载文章时发生错误: {title}")
-        logging.error(f"错误详情: {str(e)}")
-        logging.error(f"URL: {url}")
-        flush_logs()
+    except Exception as exc:  # noqa: BLE001 - 单篇失败记录后继续
+        article_log["status"] = "文章下载失败, 原因:%s" % exc
+        logging.error("下载文章时发生错误: %s", title)
+        logging.error("错误详情: %s", exc)
+        logging.error("URL: %s", url)
+        logging.debug("Traceback: %s", traceback.format_exc())
         return article_log
 
-def process_single_collection(collection_name, collection_url):
-    """处理单个收藏夹"""
-    global current_collection_name, processing_log
+
+def process_single_collection(
+    collection_name: str,
+    collection_url: str,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """处理单个收藏夹：取列表 → 过滤已下载 → 并发下载正文。"""
+    global current_collection_name
     current_collection_name = collection_name
-    
-    logging.info(f"开始处理收藏夹: {collection_name}")
-    logging.info(f"收藏夹URL: {collection_url}")
-    flush_logs()
-    
-    try:
-        collection_id = collection_url.split('?')[0].split('/')[-1]
-        logging.info(f"解析得到收藏夹ID: {collection_id}")
-        flush_logs()
-        
-        urls, titles = get_article_urls_in_collection(collection_id)
-        
-        if not urls:
-            logging.warning(f"收藏夹 '{collection_name}' 没有获取到任何文章")
-            flush_logs()
-            return
-            
-    except Exception as e:
-        logging.error(f"处理收藏夹 '{collection_name}' 时发生错误: {str(e)}")
-        logging.error(f"错误详情: {traceback.format_exc()}")
-        flush_logs()
-        return
-    
-    # 初始化此收藏夹的日志记录
-    collection_log = {
+
+    logging.info("开始处理收藏夹: %s", collection_name)
+    logging.info("收藏夹URL: %s", collection_url)
+
+    collection_log: Dict[str, Any] = {
         "name": collection_name,
         "url": collection_url,
-        "list": []
+        "list": [],
     }
-    
-    # 验证数据一致性
-    if len(urls) != len(titles):
-        error_msg = f'地址标题列表长度不一致: urls={len(urls)}, titles={len(titles)}'
-        logging.error(error_msg)
-        flush_logs()
+
+    collection_id = parse_collection_id(collection_url)
+    logging.info("解析得到收藏夹ID: %s", collection_id)
+
+    try:
+        items = fetch_collection_items(
+            session,
+            collection_id,
+            limiter=request_limiter,
+            max_items=1 if dry_run else None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logging.error("处理收藏夹 '%s' 时发生错误: %s", collection_name, exc)
+        logging.debug("Traceback: %s", traceback.format_exc())
+        collection_log["error"] = str(exc)
         processing_log.append(collection_log)
-        return
-    
-    print(f"收藏夹 '{collection_name}' 共获取 {len(urls)} 篇可导出回答或专栏")
-    
-    downloadDir = get_output_path(collection_name)
-    if not os.path.exists(downloadDir):
-        os.makedirs(downloadDir)
+        return collection_log
 
-    reserved_paths = set()
-    download_tasks = []
-    skipped_logs = []
+    if not items:
+        logging.warning("收藏夹 '%s' 没有获取到任何文章", collection_name)
+        print("收藏夹 '%s' 没有获取到任何可导出文章" % collection_name)
+        processing_log.append(collection_log)
+        return collection_log
 
-    for i in range(len(urls)):
-        url = urls[i]
-        title = titles[i]
-        file_path = build_reserved_file_path(downloadDir, title, url, reserved_paths)
+    print("收藏夹 '%s' 共获取 %d 篇可导出回答或专栏" % (collection_name, len(items)))
+    if dry_run:
+        for item in items:
+            print("  - [%s] %s" % (item.type_label, item.title))
+        collection_log["dry_run"] = True
+        processing_log.append(collection_log)
+        return collection_log
 
-        if is_article_already_downloaded(file_path, url):
-            skipped_logs.append({
-                "name": title,
-                "url": url,
-                "status": "文章已存在,跳过下载"
-            })
+    download_dir = get_output_path(collection_name)
+    os.makedirs(download_dir, exist_ok=True)
+    assets_dir = os.path.join(download_dir, "assets")
+
+    image_downloader = None
+    if not config.get("skipImages"):
+        image_downloader = ImageDownloader(session, assets_dir, max_workers=get_image_workers())
+
+    reserved_paths: set = set()
+    download_tasks: List[Dict[str, Any]] = []
+    skipped_logs: List[Dict[str, Any]] = []
+
+    for item in items:
+        file_path = build_reserved_file_path(download_dir, item.title, item.url, reserved_paths)
+        if is_article_already_downloaded(file_path, item.url):
+            skipped_logs.append(
+                {"name": item.title, "url": item.url, "type": item.type, "status": "文章已存在,跳过下载"}
+            )
             continue
-
-        download_tasks.append({
-            "title": title,
-            "url": url,
-            "file_path": file_path
-        })
+        download_tasks.append(
+            {
+                "title": item.title,
+                "url": item.url,
+                "type": item.type,
+                "file_path": file_path,
+                "image_downloader": image_downloader,
+            }
+        )
 
     collection_log["list"].extend(skipped_logs)
 
     worker_count = get_download_workers()
-    print(f"使用 {worker_count} 个线程下载正文")
-
     if download_tasks:
+        print("使用 %d 个线程下载正文（已跳过 %d 篇）" % (worker_count, len(skipped_logs)))
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
             futures = [executor.submit(download_single_article, task) for task in download_tasks]
-            for future in tqdm(as_completed(futures), total=len(futures), desc=f"处理 {collection_name}"):
+            for future in tqdm(as_completed(futures), total=len(futures), desc="处理 %s" % collection_name):
                 collection_log["list"].append(future.result())
-    
-    # 将收藏夹日志添加到全局日志
-    processing_log.append(collection_log)
-    print(f"收藏夹 '{collection_name}' 下载完毕")
-
-
-if __name__ == '__main__':
-    # 加载配置
-    config = load_config()
-    
-    # 解析输出路径
-    if config.get('outputPath'):
-        base_output_path = parse_output_path(config['outputPath'], config.get('os', ''))
-        if base_output_path:
-            print(f"使用自定义输出路径: {base_output_path}")
-            # 重新配置日志路径
-            reconfigure_logging()
-        else:
-            print("输出路径解析失败，使用默认路径")
-            base_output_path = None
     else:
-        print("使用默认输出路径: downloads/")
-    
-    # 检查是否启用openCollection模式
-    open_collection_mode = config.get('openCollection', False)
-    
-    if open_collection_mode:
-        print("检测到openCollection模式已启用")
-        print("请先运行 python fetch_collections.py 获取收藏夹列表")
-        print("然后将config.json中的openCollection设为false，重新运行此程序")
-        sys.exit(1)
-    
-    # 常规模式：处理收藏夹下载
-    zhihu_collections = config.get('zhihuUrls', [])
-    
-    if not zhihu_collections:
-        print("没有找到要处理的收藏夹配置")
-        print("提示：请运行 python fetch_collections.py 自动获取收藏夹列表")
-        sys.exit(1)
-    
-    print(f"共找到 {len(zhihu_collections)} 个收藏夹待处理")
-    
-    for collection in zhihu_collections:
-        collection_name = collection.get('name', '未命名收藏夹')
-        collection_url = collection.get('url', '')
-        
-        if not collection_url:
-            print(f"收藏夹 '{collection_name}' 缺少URL，跳过")
-            continue
-        
-        print(f"\n开始处理收藏夹: {collection_name}")
-        process_single_collection(collection_name, collection_url)
-    
-    print("\n所有收藏夹处理完毕!")
-    
-    # 保存处理日志
-    save_processing_log()
+        print("收藏夹 '%s' 全部已下载，无需重复处理" % collection_name)
 
-# def testMarkdownifySingleAnswer():
-#     url = "https://www.zhihu.com/question/506166712/answer/2271842801"
-#     content = get_single_answer_content(url)
-#     md = markdownify(content, heading_style="ATX")
-#     id = url.split('/')[-1]
-#
-#     downloadDir = os.path.join(os.path.dirname(__file__), 'downloads', '剪藏')
-#     if not os.path.exists(downloadDir):
-#         os.makedirs(downloadDir)
-#     with open(os.path.join(downloadDir, id + ".md"), "w", encoding='utf-8') as md_file:
-#         md_file.write(md)
-#     print("{} 转换成功".format(id))
-#
-# def testMarkdownifySinglePost():
-#     url = 'https://zhuanlan.zhihu.com/p/386395767'
-#     content = get_single_post_content(url)
-#     md = markdownify(content, heading_style="ATX")
-#     id = url.split('/')[-1]
-#     with open("./" + id + ".md", "w", encoding='utf-8') as md_file:
-#         md_file.write(md)
-#     print("{} 转换成功".format(id))
-#
-#
-# # if __name__ == '__main__':
-# #     testMarkdownifySingleAnswer()
-#
+    if image_downloader is not None:
+        collection_log["images"] = dict(image_downloader.stats)
+
+    processing_log.append(collection_log)
+    print("收藏夹 '%s' 下载完毕" % collection_name)
+    return collection_log
+
+
+# ---------------------------------------------------------------------------
+# 汇总
+# ---------------------------------------------------------------------------
+
+
+def summarize() -> Dict[str, int]:
+    """统计本次处理的成功 / 跳过 / 失败数量。"""
+    stats = {"collections": len(processing_log), "total": 0, "downloaded": 0, "skipped": 0, "failed": 0}
+    for collection in processing_log:
+        for entry in collection.get("list", []):
+            stats["total"] += 1
+            status = entry.get("status", "")
+            if status.startswith("正常下载"):
+                stats["downloaded"] += 1
+            elif "跳过" in status:
+                stats["skipped"] += 1
+            else:
+                stats["failed"] += 1
+    return stats
+
+
+def print_summary() -> None:
+    """打印处理结果汇总表。"""
+    stats = summarize()
+    base, _, _ = config_mod.get_search_paths({"_base_output_path": base_output_path})
+    print("\n" + "=" * 52)
+    print("导出完成")
+    print("-" * 52)
+    print("收藏夹  : %d 个" % stats["collections"])
+    print("文章    : 共 %d 篇 | 新下载 %d | 跳过 %d | 失败 %d"
+          % (stats["total"], stats["downloaded"], stats["skipped"], stats["failed"]))
+    print("输出目录: %s" % base)
+    if debug_log_file:
+        print("日志    : %s" % debug_log_file)
+    print("=" * 52)
+
+
+# ---------------------------------------------------------------------------
+# 命令行
+# ---------------------------------------------------------------------------
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="main.py",
+        description="把知乎收藏夹导出为本地 Markdown（Obsidian 友好）",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--config", help="配置文件路径，默认 ./config.json")
+    parser.add_argument("--output", help="覆盖配置里的 outputPath")
+    parser.add_argument("--only", action="append", default=[], metavar="NAME_OR_ID",
+                        help="只导出指定收藏夹（按名称或 ID，可重复传入）")
+    parser.add_argument("--workers", type=int, help="正文下载并发数（1-16）")
+    parser.add_argument("--delay", type=float, help="每次请求之间的最小间隔秒数")
+    parser.add_argument("--skip-images", action="store_true", help="只导出文字，不下载正文图片")
+    parser.add_argument("--list", action="store_true", help="只列出收藏夹与条目，不下载")
+    parser.add_argument("--dry-run", action="store_true", help="每个收藏夹只试抓 1 条，用于验证配置")
+    parser.add_argument("-v", "--verbose", action="store_true", help="输出调试级日志")
+    return parser
+
+
+def _select_collections(collections: Sequence[Dict[str, Any]], only: Sequence[str]):
+    """按 --only 过滤收藏夹（名称或 ID 命中即可）。"""
+    if not only:
+        return list(collections)
+
+    wanted = {str(v).strip().lower() for v in only}
+    selected = []
+    for collection in collections:
+        name = str(collection.get("name", "")).strip().lower()
+        cid = parse_collection_id(collection.get("url", "")).lower()
+        if name in wanted or cid in wanted:
+            selected.append(collection)
+        elif any(w and (w in name or w in cid) for w in wanted):
+            selected.append(collection)
+    return selected
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    """程序入口，返回进程退出码。"""
+    global config, base_output_path, cookies, session, request_limiter, processing_log
+
+    args = build_arg_parser().parse_args(argv)
+
+    # 1) 配置
+    config = config_mod.load_config(args.config)
+    if args.workers:
+        config["downloadWorkers"] = args.workers
+    if args.delay is not None:
+        config["requestDelay"] = args.delay
+    if args.skip_images:
+        config["skipImages"] = True
+
+    # 2) 输出路径
+    base_output_path = config_mod.resolve_output_path(config, override=args.output)
+    if base_output_path:
+        print("使用自定义输出路径: %s" % base_output_path)
+        config["_base_output_path"] = base_output_path
+    else:
+        print("使用默认输出路径: %s/" % config_mod.DOWNLOAD_DIRNAME)
+
+    # 3) 日志（在输出路径确定之后再初始化，日志会落在同一个根目录下）
+    reconfigure_logging()
+    logging.debug("启动参数: %s", vars(args))
+
+    # 4) cookies 与会话
+    cookies = load_cookies()
+    session = build_session(cookies)
+    request_limiter = RateLimiter(config_mod.get_request_delay(config))
+
+    # 5) 模式判断
+    if config.get("openCollection"):
+        print("检测到 openCollection 模式已启用")
+        print("请先运行 python fetch_collections.py 获取收藏夹列表")
+        print("脚本会自动把 openCollection 置为 false，然后重新运行 python main.py")
+        return 1
+
+    collections = config.get("zhihuUrls") or []
+    if not collections:
+        print("没有找到要处理的收藏夹配置")
+        print("提示：先运行 python fetch_collections.py 自动获取收藏夹列表")
+        return 1
+
+    collections = _select_collections(collections, args.only)
+    if not collections:
+        print("--only 没有匹配到任何收藏夹，请用 --list 查看可用名称")
+        return 1
+
+    print("共找到 %d 个收藏夹待处理" % len(collections))
+
+    if args.list:
+        print("-" * 52)
+        for index, collection in enumerate(collections, 1):
+            name = collection.get("name", "未命名收藏夹")
+            cid = parse_collection_id(collection.get("url", ""))
+            total = 0
+            try:
+                total = get_collection_total(session, cid, request_limiter)
+            except Exception as exc:  # noqa: BLE001 - 列表模式不该因为单个失败而中断
+                logging.warning("获取收藏夹 %s 条目数失败: %s", cid, exc)
+            print("%2d. %-24s %s (%s 条)" % (index, name, cid, total))
+        print("-" * 52)
+        return 0
+
+    processing_log = []
+    try:
+        for collection in collections:
+            name = collection.get("name", "未命名收藏夹")
+            url = collection.get("url", "")
+            if not url:
+                print("收藏夹 '%s' 缺少 URL，跳过" % name)
+                continue
+            print("\n开始处理收藏夹: %s" % name)
+            process_single_collection(name, url, dry_run=args.dry_run)
+    except KeyboardInterrupt:
+        print("\n已手动中断，正在保存已完成的进度...")
+        logging.warning("用户中断了导出流程")
+    finally:
+        if processing_log:
+            save_processing_log()
+            print_summary()
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

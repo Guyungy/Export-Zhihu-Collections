@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "export-zhihu-collections"
+version = "2.0.0"
+description = "把知乎收藏夹导出为本地 Markdown（Obsidian 友好）"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { file = "LICENSE" }
+dependencies = [
+    "requests>=2.31",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.2",
+    "markdownify>=1.1,<2",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4"]
+
+[tool.setuptools]
+py-modules = ["main", "fetch_collections", "get_collections", "utils"]
+packages = ["zhihu_export"]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+norecursedirs = ["legacy", "fixtures", "downloads", "__pycache__"]
+pythonpath = ["."]
+addopts = "-q --strict-markers"
+filterwarnings = [
+    "ignore::DeprecationWarning:get_collections",
+]

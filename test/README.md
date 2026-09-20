@@ -1,241 +1,86 @@
-# 测试文档
+# 测试说明
 
-本目录包含Export-Zhihu-Collections项目的各种测试文件。
+本目录是 Export-Zhihu-Collections 的测试集合，**全部离线运行**：不需要网络、不需要 `cookies.json`，
+知乎页面用 `fixtures/` 里的样例 HTML，HTTP 用假会话（`FakeSession`）替代。
 
-## 测试文件说明
-
-### 核心功能测试
-
-#### test_main_fixes.py
-测试main.py的修复情况，包括：
-- 函数返回值修复验证
-- 日志系统改进验证  
-- 错误处理改进验证
-- 语法正确性验证
-
-#### test_syntax.py
-代码语法和结构验证，包括：
-- Python语法编译测试
-- AST解析测试
-- 关键函数定义检查
-- 错误处理模式验证
-
-#### test_debug_path.py
-调试路径功能测试，包括：
-- debug路径配置验证
-- 文件保存路径测试
-- 目录自动创建测试
-
-#### test_post_fix.py
-专栏文章修复验证测试，包括：
-- 新增CSS选择器验证
-- 智能内容检测功能测试
-- 错误分析功能测试
-- 语法正确性验证
-
-#### test_post_simple.py
-简化版专栏文章问题分析，包括：
-- 函数逻辑分析
-- 问题识别
-- 改进建议生成
-
-#### test_actual_url.py
-实际URL测试（需要依赖库），包括：
-- 修复后函数实际调用测试
-- debug文件生成验证
-- 日志输出检查
-
-#### test_post_content_issue.py
-完整的专栏内容问题测试（需要网络和依赖库），包括：
-- URL可访问性测试
-- 页面结构分析
-- 内容解析验证
-
-#### test_final.py
-最终功能验证（需要依赖库），包括：
-- 配置加载测试
-- 日志系统测试
-- 函数导入测试
-- 错误处理测试
-
-### 收藏夹功能测试
-
-#### test_fetch_collections.py
-fetch_collections.py脚本测试，包括：
-- 收藏夹获取功能测试
-- JSON输出验证
-- cookies处理测试
-
-#### test_get_collections.py
-get_collections模块功能测试，包括：
-- cookies加载测试
-- 收藏夹获取功能测试
-- 文件保存功能测试
-- 模块导入测试
-
-### 配置和逻辑测试
-
-#### test_config_logic.py
-配置逻辑测试，包括：
-- 配置文件加载
-- openCollection模式逻辑
-- JSON结构验证
-- 模式切换逻辑
-
-#### test_simulation.py
-主程序逻辑模拟测试，包括：
-- 主程序逻辑模拟
-- 两种模式的行为模拟
-- 功能验证
-
-### 开发和调试测试
-
-#### test_debug.py
-调试功能测试
-
-#### test_workflow.py
-工作流程测试
-
-#### test_refactor.py / test_refactor_simple.py
-重构功能测试
-
-#### test_fetch_simple.py
-简化版fetch测试
-
-#### test_open_collection.py
-完整的openCollection功能测试（需要网络和依赖库）
-
-## 如何运行测试
-
-### 前置条件
-1. 确保在项目根目录运行所有测试
-2. 对于需要网络请求的测试，确保cookies.json文件存在且有效
-
-### 快速测试所有功能
-
-#### 1. 基础修复验证（推荐先运行）
-```bash
-# 验证main.py修复情况
-python3 test/test_main_fixes.py
-
-# 验证语法和结构
-python3 test/test_syntax.py
-
-# 验证debug路径功能
-python3 test/test_debug_path.py
-```
-
-#### 2. 配置和逻辑测试（无需依赖）
-```bash
-# 测试配置逻辑
-python3 test/test_config_logic.py
-
-# 测试模拟功能
-python3 test/test_simulation.py
-
-# 测试get_collections模块
-python3 test/test_get_collections.py
-```
-
-#### 3. 完整功能测试（需要依赖库）
-```bash
-# 需要先安装依赖
-pip3 install -r requirements.txt
-
-# 最终功能验证
-python3 test/test_final.py
-
-# 完整收藏夹功能测试
-python3 test/test_open_collection.py
-```
-
-### 分类测试指南
-
-#### 基础功能测试（无需安装依赖库）
-这些测试不需要安装外部依赖库，只测试核心逻辑：
-- `test_config_logic.py`
-- `test_simulation.py`
-- `test_get_collections.py`
+## 快速开始
 
 ```bash
-python3 test/test_config_logic.py
-python3 test/test_simulation.py  
-python3 test/test_get_collections.py
+# 在项目根目录执行
+pip install -r requirements-dev.txt
+pytest
 ```
 
-#### 完整功能测试（需要安装依赖库）
-这些测试需要安装requirements.txt中的依赖库：
-- `test_open_collection.py`
+## 目录结构
 
-```bash
-# 安装依赖（如果尚未安装）
-pip3 install -r requirements.txt
-
-# 运行完整测试
-python3 test/test_open_collection.py
+```text
+test/
+├── conftest.py          # pytest fixture（样例 HTML、假会话）
+├── helpers.py           # FakeResponse / FakeSession / fixture 读取工具
+├── fixtures/            # 知乎页面样例 HTML
+│   ├── answer_page.html              # 回答页（含图片、链接卡片、mailto、脚注回链）
+│   ├── post_page.html                # 专栏页
+│   ├── mine_collections_page.html    # 我的收藏夹（标准结构）
+│   └── mine_collections_page_v2.html # 我的收藏夹（改版后的结构，用于验证兜底解析）
+├── test_config.py       # 配置加载与跨平台路径解析
+├── test_utils.py        # 文件名清理与截断
+├── test_collections.py  # 收藏夹清单 / 条目抓取与解析
+├── test_converter.py    # HTML → Markdown 与图片下载
+├── test_main_integration.py  # main.py 端到端流程与 CLI
+└── legacy/              # 历史自检脚本，pytest 不收集
 ```
 
-### 测试get_collections模块
+## 各文件覆盖范围
 
-#### 模块功能测试
-```bash
-# 测试模块的所有功能（模拟测试，无网络请求）
-python3 test/test_get_collections.py
-```
+### test_config.py
 
-#### 直接运行模块
-```bash
-# 直接运行get_collections模块进行简单测试
-python3 get_collections.py
-```
+- `normalize_os` / `is_windows_path` 等系统识别逻辑
+- `parse_output_path`：`~` 展开、相对路径转绝对路径、空值处理
+- `resolve_output_path`：单路径 / 按系统映射 / Windows 路径在 macOS 上被拒 / 命令行覆盖
+- `downloadWorkers` / `imageWorkers` / `requestDelay` 的边界夹取
+- `load_config`：正常、缺文件、坏 JSON、旧版 `zhihuUrls.json` 回退
 
-#### 真实功能测试
-```bash
-# 使用模块进行真实的收藏夹获取（需要有效cookies）
-python3 -c "from get_collections import process_open_collection_mode; process_open_collection_mode()"
-```
+### test_utils.py
 
-## 测试数据文件
+- 文件名非法字符替换、全角化 `?` / `:`、空白合并、空标题兜底
+- 长中文标题按 UTF-8 字节截断（不会截出半个汉字）
 
-测试过程中可能生成的临时文件：
-- `test_zhihuUrls.json` - 测试JSON输出
-- `simulated_zhihuUrls.json` - 模拟测试输出
-- `test/test_collections_output.json` - 模块测试输出
+### test_collections.py
 
-这些文件会在测试完成后自动清理。
+- 收藏夹 ID 解析（链接 / 带查询串 / 裸 ID）
+- 条目标题解析：回答取问题标题、专栏取文章标题、想法取摘要
+- 分页抓取、`max_items` 限制、不支持类型（视频）跳过
+- 接口异常时返回已抓到的部分，不抛异常
+- 401 / 403 / 404 的可操作提示文案
+- 「我的收藏夹」页面：标准选择器解析、改版后链接扫描兜底、翻页到底判定
 
-## 故障排查
+### test_converter.py
 
-### 常见问题
+- 图片下载、缓存命中、扩展名推断、同名不同图加摘要后缀、失败不抛异常
+- `data:` 图片跳过、并发预取去重
+- 图片走 Obsidian 内嵌语法 `![[...]]`，失败时保留远程链接
+- 链接卡片使用卡片标题、`mailto:` 链接降级为纯文本、脚注回链不产生列表符号
+- 标题使用 ATX 风格（`## `）
 
-1. **ModuleNotFoundError**: 
-   - 确保在项目根目录运行测试
-   - 检查文件路径是否正确
+### test_main_integration.py
 
-2. **导入bs4失败**:
-   - 运行 `pip3 install -r requirements.txt` 安装依赖
+- `is_article_already_downloaded`：空文件视为未下载
+- 并发占位文件名去重、输出目录推导、`--only` 过滤、CLI 参数默认值
+- 端到端：整夹导出（含图片落盘）、重复运行跳过、专栏 URL 路由到专栏解析器、
+  失败不写占位文件、`--skip-images`、处理日志 JSON
+- CLI：`--list` 输出、`openCollection` 模式提示、空配置返回码
 
-3. **cookies相关错误**:
-   - 确保cookies.json文件存在
-   - 检查cookies格式是否正确
+## 关于 legacy/
 
-4. **网络请求失败**:
-   - 检查网络连接
-   - 验证cookies是否有效
-   - 确认知乎网站是否可访问
+`legacy/` 里是早期调试阶段留下的自检脚本（例如 `test_main_fixes.py`、`test_syntax.py`），
+它们通过**读取源码文本做模式匹配**来验证当时的具体修复，与实现强耦合，重构后会失效。
 
-### 调试建议
-
-1. 首先运行基础测试确认核心逻辑正常
-2. 逐步运行需要依赖的测试
-3. 最后运行需要网络的完整测试
-4. 查看测试输出的详细信息进行问题定位
+这些脚本已由 `test/` 下基于行为的 pytest 用例取代，仅作历史记录保留，
+通过 `pyproject.toml` 里的 `norecursedirs` 排除在 pytest 收集之外，需要时可以手动执行。
 
 ## 贡献测试
 
-如果您想添加新的测试用例：
-
-1. 在test目录下创建新的测试文件
-2. 使用类似的命名规范：`test_功能名称.py`
-3. 在文件开头添加路径设置以便导入模块
-4. 更新此README文档说明新测试的用途和运行方法
+1. 新增用例放在 `test/test_*.py`，与实现的模块一一对应
+2. 需要页面结构时，往 `test/fixtures/` 加样例 HTML，而不是访问真实站点
+3. 需要 HTTP 时使用 `helpers.FakeSession`，保持测试离线、可重复
+4. 断言行为（返回值、落盘文件、日志文案），不要断言源码文本

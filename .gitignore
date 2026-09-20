@@ -1,19 +1,35 @@
+# macOS / 编辑器
 .DS_Store
-__pycache__
-venv
-venv/*
-assets
-.idea
-剪藏
-剪藏/*
-.obsidian
-.obsidian/*
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
 build/
 dist/
 *.spec
+venv/
+.venv/
+.pytest_cache/
+
+# ---- 个人数据与产物，不要提交 ----
+# 登录态 cookies：泄露等于账号被接管
 cookies.json
-/downloads
-.vscode/*
-/Zhihu知乎
-*.json
-cookies.json
+cookies.local.json
+
+# 导出产物与日志
+/downloads/
+/logs/
+/debug/
+assets/
+/剪藏/
+/Zhihu知乎/
+.obsidian/
+
+# 诊断工具的临时输出
+debug_page.html
+
+# 本地工作区（Agent 记忆、会话数据），不入公开仓库
+.workbuddy/

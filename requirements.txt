@@ -1,5 +1,6 @@
-requests
-beautifulsoup4
-lxml
-markdownify
-tqdm
+# 运行依赖（与 pyproject.toml 保持一致）
+requests>=2.31,<3
+beautifulsoup4>=4.12,<5
+lxml>=5.2
+markdownify>=1.1,<2
+tqdm>=4.66

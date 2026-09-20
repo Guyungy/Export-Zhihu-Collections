@@ -1,0 +1,4 @@
+-r requirements.txt
+
+# 开发/测试依赖
+pytest>=7.4

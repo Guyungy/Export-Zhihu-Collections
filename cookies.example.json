@@ -1,0 +1,20 @@
+[
+  {
+    "name": "z_c0",
+    "value": "把浏览器里 z_c0 的值粘到这里",
+    "domain": ".zhihu.com",
+    "expirationDate": null
+  },
+  {
+    "name": "d_c0",
+    "value": "把浏览器里 d_c0 的值粘到这里",
+    "domain": ".zhihu.com",
+    "expirationDate": null
+  },
+  {
+    "name": "SESSIONID",
+    "value": "把浏览器里 SESSIONID 的值粘到这里",
+    "domain": "www.zhihu.com",
+    "expirationDate": null
+  }
+]
